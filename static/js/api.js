@@ -121,5 +121,19 @@ const API = {
       method: "POST",
       body: JSON.stringify({ content })
     });
+  },
+
+  // Message Edit & Delete Endpoints
+  async editMessage(messageId, content) {
+    return this.request(`/api/messages/${messageId}`, {
+      method: "PUT",
+      body: JSON.stringify({ content })
+    });
+  },
+
+  async deleteMessage(messageId) {
+    return this.request(`/api/messages/${messageId}`, {
+      method: "DELETE"
+    });
   }
 };

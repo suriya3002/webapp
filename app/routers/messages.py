@@ -6,9 +6,10 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.models import Message, User
-from app.schemas import MessageResponse, MessageCreate
+from app.schemas import MessageResponse, MessageCreate, MessageUpdate
 from app.auth import get_current_user
 from app.connection_manager import manager
+from datetime import datetime, timezone
 
 router = APIRouter(prefix="/api/messages", tags=["Messages"])
 
@@ -99,3 +100,97 @@ async def post_direct_message(
     )
 
     return MessageResponse(**msg_dict)
+ 
+@router.put("/{message_id}", response_model=MessageResponse)
+async def edit_message(
+    message_id: int,
+    msg_update: MessageUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Edit a message. Only the author of the message is authorized to edit it."""
+    res = await db.execute(
+        select(Message).options(selectinload(Message.sender)).where(Message.id == message_id)
+    )
+    message = res.scalar_one_or_none()
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    if message.sender_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Permission denied: You can only edit your own messages")
+
+    new_content = msg_update.content.strip()
+    if not new_content:
+        raise HTTPException(status_code=400, detail="Message content cannot be empty")
+
+    message.content = new_content
+    message.is_edited = True
+    message.updated_at = datetime.now(timezone.utc)
+
+    await db.commit()
+    await db.refresh(message)
+
+    msg_dict = message.to_dict()
+
+    # Broadcast real-time edit event
+    if message.room_id:
+        await manager.broadcast_to_room(message.room_id, {
+            "type": "message_edited",
+            "message": msg_dict
+        })
+    elif message.recipient_id:
+        await manager.send_direct_message(
+            sender_id=message.sender_id,
+            recipient_id=message.recipient_id,
+            message={
+                "type": "message_edited",
+                "message": msg_dict
+            }
+        )
+
+    return MessageResponse(**msg_dict)
+
+
+@router.delete("/{message_id}")
+async def delete_message(
+    message_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete a message. Only the author of the message is authorized to delete it."""
+    res = await db.execute(select(Message).where(Message.id == message_id))
+    message = res.scalar_one_or_none()
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    if message.sender_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Permission denied: You can only delete your own messages")
+
+    msg_id = message.id
+    room_id = message.room_id
+    recipient_id = message.recipient_id
+    sender_id = message.sender_id
+
+    await db.delete(message)
+    await db.commit()
+
+    # Broadcast real-time deletion event
+    if room_id:
+        await manager.broadcast_to_room(room_id, {
+            "type": "message_deleted",
+            "message_id": msg_id,
+            "room_id": room_id
+        })
+    elif recipient_id:
+        await manager.send_direct_message(
+            sender_id=sender_id,
+            recipient_id=recipient_id,
+            message={
+                "type": "message_deleted",
+                "message_id": msg_id,
+                "sender_id": sender_id,
+                "recipient_id": recipient_id
+            }
+        )
+
+    return {"detail": "Message deleted successfully", "message_id": msg_id}

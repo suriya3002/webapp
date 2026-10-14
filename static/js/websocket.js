@@ -121,6 +121,21 @@ class ChatWebSocketClient {
     });
   }
 
+  sendEditMessage(messageId, content) {
+    return this.send({
+      action: "edit_message",
+      message_id: messageId,
+      content: content
+    });
+  }
+
+  sendDeleteMessage(messageId) {
+    return this.send({
+      action: "delete_message",
+      message_id: messageId
+    });
+  }
+
   handleMessage(data) {
     const type = data.type;
     switch (type) {
@@ -135,6 +150,12 @@ class ChatWebSocketClient {
         break;
       case "direct_message":
         this.emit("chat:direct_message", data.message);
+        break;
+      case "message_edited":
+        this.emit("chat:message_edited", data.message);
+        break;
+      case "message_deleted":
+        this.emit("chat:message_deleted", data);
         break;
       case "user_typing":
         this.emit("chat:typing", data);

@@ -43,6 +43,15 @@ async def init_db():
         async with engine.begin() as conn:
             # Create tables
             await conn.run_sync(Base.metadata.create_all)
+            # Safe column migrations for SQLite / PostgreSQL
+            try:
+                await conn.exec_driver_sql("ALTER TABLE messages ADD COLUMN is_edited BOOLEAN DEFAULT 0")
+            except Exception:
+                pass
+            try:
+                await conn.exec_driver_sql("ALTER TABLE messages ADD COLUMN updated_at DATETIME NULL")
+            except Exception:
+                pass
             logger.info("Database tables initialized successfully.")
     except Exception as e:
         logger.warning(f"Failed to connect using configured DATABASE_URL ({db_url}): {e}")

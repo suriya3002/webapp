@@ -87,7 +87,9 @@ class Message(Base):
     recipient_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     content = Column(Text, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    updated_at = Column(DateTime(timezone=True), nullable=True)
     is_read = Column(Boolean, default=False)
+    is_edited = Column(Boolean, default=False)
 
     # Relationships
     sender = relationship("User", foreign_keys=[sender_id], back_populates="sent_messages")
@@ -110,5 +112,7 @@ class Message(Base):
             "recipient_id": self.recipient_id,
             "content": self.content,
             "created_at": self.created_at.isoformat() if self.created_at else None,
-            "is_read": self.is_read
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "is_read": self.is_read,
+            "is_edited": bool(self.is_edited)
         }

@@ -265,6 +265,84 @@ async def websocket_endpoint(
                     # In 1-on-1 private chat, deliver strictly to the peer user
                     await manager.send_to_user(target_recipient_id, typing_payload)
 
+            elif action == "edit_message":
+                try:
+                    msg_id = int(data.get("message_id"))
+                    new_content = (data.get("content") or "").strip()
+                except (ValueError, TypeError):
+                    continue
+
+                if not msg_id or not new_content:
+                    continue
+
+                async with AsyncSessionLocal() as db:
+                    res = await db.execute(
+                        select(Message).options(selectinload(Message.sender)).where(Message.id == msg_id)
+                    )
+                    msg = res.scalar_one_or_none()
+                    if msg and msg.sender_id == user_id:
+                        from datetime import datetime, timezone
+                        msg.content = new_content
+                        msg.is_edited = True
+                        msg.updated_at = datetime.now(timezone.utc)
+                        await db.commit()
+                        await db.refresh(msg)
+                        msg_dict = msg.to_dict()
+
+                        if msg.room_id:
+                            await manager.broadcast_to_room(msg.room_id, {
+                                "type": "message_edited",
+                                "message": msg_dict
+                            })
+                        elif msg.recipient_id:
+                            await manager.send_direct_message(
+                                sender_id=msg.sender_id,
+                                recipient_id=msg.recipient_id,
+                                message={
+                                    "type": "message_edited",
+                                    "message": msg_dict
+                                }
+                            )
+
+            elif action == "delete_message":
+                try:
+                    msg_id = int(data.get("message_id"))
+                except (ValueError, TypeError):
+                    continue
+
+                if not msg_id:
+                    continue
+
+                async with AsyncSessionLocal() as db:
+                    res = await db.execute(select(Message).where(Message.id == msg_id))
+                    msg = res.scalar_one_or_none()
+                    if msg and msg.sender_id == user_id:
+                        del_id = msg.id
+                        del_room_id = msg.room_id
+                        del_recipient_id = msg.recipient_id
+                        del_sender_id = msg.sender_id
+
+                        await db.delete(msg)
+                        await db.commit()
+
+                        if del_room_id:
+                            await manager.broadcast_to_room(del_room_id, {
+                                "type": "message_deleted",
+                                "message_id": del_id,
+                                "room_id": del_room_id
+                            })
+                        elif del_recipient_id:
+                            await manager.send_direct_message(
+                                sender_id=del_sender_id,
+                                recipient_id=del_recipient_id,
+                                message={
+                                    "type": "message_deleted",
+                                    "message_id": del_id,
+                                    "sender_id": del_sender_id,
+                                    "recipient_id": del_recipient_id
+                                }
+                            )
+
     except WebSocketDisconnect:
         await manager.disconnect(websocket)
     except Exception as e:

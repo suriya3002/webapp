@@ -12,6 +12,7 @@ const App = {
     soundEnabled: localStorage.getItem("pulse_sound_enabled") !== "false",
     sidebarFilter: "all",
     pendingDeleteRoom: null,
+    pendingDeleteMessage: null,
     cmdPaletteItems: [],
     cmdPaletteActiveIndex: 0
   },
@@ -119,6 +120,13 @@ const App = {
       cancelDeleteRoomBtn: document.getElementById("cancel-delete-room-btn"),
       confirmDeleteRoomBtn: document.getElementById("confirm-delete-room-btn"),
 
+      // Delete Message Confirmation Modal
+      deleteMsgModal: document.getElementById("delete-msg-modal"),
+      deleteMsgPreview: document.getElementById("delete-msg-preview"),
+      closeDeleteMsgBtn: document.getElementById("close-delete-msg-btn"),
+      cancelDeleteMsgBtn: document.getElementById("cancel-delete-msg-btn"),
+      confirmDeleteMsgBtn: document.getElementById("confirm-delete-msg-btn"),
+
       // Command Palette (Ctrl+K)
       cmdPaletteModal: document.getElementById("cmd-palette-modal"),
       cmdPaletteInput: document.getElementById("cmd-palette-input"),
@@ -200,6 +208,7 @@ const App = {
       } else if (e.key === "Escape") {
         this.closeCommandPalette();
         this.hideDeleteModal();
+        this.hideDeleteMessageModal();
         this.closeEmojiPicker();
       }
     });
@@ -228,6 +237,17 @@ const App = {
     }
     if (this.elements.confirmDeleteRoomBtn) {
       this.elements.confirmDeleteRoomBtn.addEventListener("click", () => this.executeDeleteRoom());
+    }
+
+    // Delete Message Custom Modal listeners
+    if (this.elements.closeDeleteMsgBtn) {
+      this.elements.closeDeleteMsgBtn.addEventListener("click", () => this.hideDeleteMessageModal());
+    }
+    if (this.elements.cancelDeleteMsgBtn) {
+      this.elements.cancelDeleteMsgBtn.addEventListener("click", () => this.hideDeleteMessageModal());
+    }
+    if (this.elements.confirmDeleteMsgBtn) {
+      this.elements.confirmDeleteMsgBtn.addEventListener("click", () => this.executeDeleteMessage());
     }
 
     // Sidebar search input inside sidebar
@@ -317,6 +337,8 @@ const App = {
     wsClient.on("presence:status", (statusData) => this.handlePresenceStatus(statusData));
     wsClient.on("chat:room_message", (msg) => this.handleIncomingRoomMessage(msg));
     wsClient.on("chat:direct_message", (msg) => this.handleIncomingDirectMessage(msg));
+    wsClient.on("chat:message_edited", (msg) => this.handleMessageEdited(msg));
+    wsClient.on("chat:message_deleted", (data) => this.handleMessageDeleted(data));
     wsClient.on("chat:typing", (typingData) => this.handleIncomingTyping(typingData));
     wsClient.on("room:created", (room) => this.handleRoomCreated(room));
     wsClient.on("room:deleted", (data) => this.handleRoomDeleted(data));
@@ -796,6 +818,7 @@ const App = {
           <span class="message-time">
             ${timeStr}
             ${isMe ? `<span class="read-receipt" title="Delivered & Read">✓✓</span>` : ''}
+            ${msg.is_edited ? `<span class="edited-tag">(edited)</span>` : ''}
           </span>
         </div>
         <div class="message-bubble">
@@ -803,6 +826,10 @@ const App = {
         </div>
         <div class="message-actions">
           <button class="msg-action-btn copy-btn" title="Copy message">📋</button>
+          ${isMe ? `
+            <button class="msg-action-btn edit-btn" title="Edit message">✏️</button>
+            <button class="msg-action-btn delete-btn" title="Delete message">🗑️</button>
+          ` : ''}
         </div>
       </div>
     `;
@@ -811,6 +838,22 @@ const App = {
       navigator.clipboard.writeText(msg.content);
       this.showToast("Copied to clipboard", "success");
     });
+
+    if (isMe) {
+      const editBtn = row.querySelector(".edit-btn");
+      if (editBtn) {
+        editBtn.addEventListener("click", () => {
+          this.startEditingMessage(msg, row);
+        });
+      }
+
+      const delBtn = row.querySelector(".delete-btn");
+      if (delBtn) {
+        delBtn.addEventListener("click", () => {
+          this.confirmAndDeleteMessage(msg);
+        });
+      }
+    }
 
     row.querySelectorAll(".quick-react-btn").forEach(btn => {
       btn.addEventListener("click", (e) => {
@@ -1062,6 +1105,167 @@ const App = {
         this.elements.confirmDeleteRoomBtn.disabled = false;
         this.elements.confirmDeleteRoomBtn.textContent = "Delete Channel";
       }
+    }
+  },
+
+  // Message Editing & Deleting
+  startEditingMessage(msg, row) {
+    const bubble = row.querySelector(".message-bubble");
+    if (!bubble || bubble.querySelector(".message-edit-wrap")) return;
+
+    const originalContent = msg.content;
+    const oldHtml = bubble.innerHTML;
+
+    bubble.innerHTML = `
+      <div class="message-edit-wrap">
+        <textarea class="message-edit-textarea" rows="2">${originalContent}</textarea>
+        <div class="message-edit-actions">
+          <button type="button" class="btn-edit-cancel">Cancel</button>
+          <button type="button" class="btn-edit-save">Save</button>
+        </div>
+      </div>
+    `;
+
+    const textarea = bubble.querySelector(".message-edit-textarea");
+    const cancelBtn = bubble.querySelector(".btn-edit-cancel");
+    const saveBtn = bubble.querySelector(".btn-edit-save");
+
+    textarea.focus();
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+
+    const cancelEdit = () => {
+      bubble.innerHTML = oldHtml;
+    };
+
+    const doSave = async () => {
+      const newText = textarea.value.trim();
+      if (!newText) {
+        this.showToast("Message cannot be empty", "error");
+        return;
+      }
+      if (newText === originalContent) {
+        cancelEdit();
+        return;
+      }
+      await this.saveEditedMessage(msg.id, newText, row, oldHtml);
+    };
+
+    cancelBtn.addEventListener("click", cancelEdit);
+    saveBtn.addEventListener("click", doSave);
+
+    textarea.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        doSave();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        cancelEdit();
+      }
+    });
+  },
+
+  async saveEditedMessage(msgId, newContent, row, fallbackHtml) {
+    try {
+      const bubble = row?.querySelector(".message-bubble");
+      if (bubble) {
+        bubble.innerHTML = `<div class="message-text">${this.formatMessageText(newContent)}</div>`;
+      }
+
+      const updated = await API.editMessage(msgId, newContent);
+      this.handleMessageEdited(updated);
+      this.showToast("Message edited successfully", "success");
+    } catch (err) {
+      if (row && fallbackHtml) {
+        const bubble = row.querySelector(".message-bubble");
+        if (bubble) bubble.innerHTML = fallbackHtml;
+      }
+      this.showToast("Failed to edit message: " + err.message, "error");
+    }
+  },
+
+  handleMessageEdited(updatedMsg) {
+    // Update in state
+    const idx = this.state.messages.findIndex(m => m.id === updatedMsg.id);
+    if (idx !== -1) {
+      this.state.messages[idx] = updatedMsg;
+    }
+
+    // Update in DOM if visible
+    const row = this.elements.messagesContainer.querySelector(`.message-row[data-msg-id="${updatedMsg.id}"]`);
+    if (row) {
+      const bubble = row.querySelector(".message-bubble");
+      if (bubble && !bubble.querySelector(".message-edit-wrap")) {
+        bubble.innerHTML = `<div class="message-text">${this.formatMessageText(updatedMsg.content)}</div>`;
+      }
+      const timeSpan = row.querySelector(".message-time");
+      if (timeSpan && !timeSpan.querySelector(".edited-tag")) {
+        const tag = document.createElement("span");
+        tag.className = "edited-tag";
+        tag.textContent = "(edited)";
+        timeSpan.appendChild(tag);
+      }
+    }
+  },
+
+  confirmAndDeleteMessage(msg) {
+    this.state.pendingDeleteMessage = msg;
+    if (this.elements.deleteMsgPreview) {
+      this.elements.deleteMsgPreview.textContent = msg.content;
+    }
+    if (this.elements.deleteMsgModal) {
+      this.elements.deleteMsgModal.classList.remove("hidden");
+    }
+  },
+
+  hideDeleteMessageModal() {
+    this.state.pendingDeleteMessage = null;
+    if (this.elements.deleteMsgModal) {
+      this.elements.deleteMsgModal.classList.add("hidden");
+    }
+  },
+
+  async executeDeleteMessage() {
+    const msg = this.state.pendingDeleteMessage;
+    if (!msg) return;
+
+    try {
+      if (this.elements.confirmDeleteMsgBtn) {
+        this.elements.confirmDeleteMsgBtn.disabled = true;
+        this.elements.confirmDeleteMsgBtn.textContent = "Deleting...";
+      }
+
+      await API.deleteMessage(msg.id);
+      this.hideDeleteMessageModal();
+      this.handleMessageDeleted({ message_id: msg.id });
+      this.showToast("Message deleted successfully", "success");
+    } catch (err) {
+      this.showToast("Failed to delete message: " + err.message, "error");
+    } finally {
+      if (this.elements.confirmDeleteMsgBtn) {
+        this.elements.confirmDeleteMsgBtn.disabled = false;
+        this.elements.confirmDeleteMsgBtn.textContent = "Delete Message";
+      }
+    }
+  },
+
+  handleMessageDeleted(data) {
+    const msgId = data.message_id;
+    // Remove from state
+    this.state.messages = this.state.messages.filter(m => m.id !== msgId);
+
+    // Remove from DOM with smooth animation
+    const row = this.elements.messagesContainer.querySelector(`.message-row[data-msg-id="${msgId}"]`);
+    if (row) {
+      row.style.transition = "opacity 0.2s ease, transform 0.2s ease";
+      row.style.opacity = "0";
+      row.style.transform = "scale(0.95)";
+      setTimeout(() => {
+        row.remove();
+        // If no messages left, render empty state
+        if (this.state.messages.length === 0) {
+          this.renderMessages();
+        }
+      }, 200);
     }
   },
 

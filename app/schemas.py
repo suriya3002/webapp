@@ -50,6 +50,9 @@ class MessageCreate(BaseModel):
     room_id: Optional[int] = None
     recipient_id: Optional[int] = None
 
+class MessageUpdate(BaseModel):
+    content: str = Field(..., min_length=1, max_length=5000)
+
 class MessageResponse(BaseModel):
     id: int
     sender_id: int
@@ -60,7 +63,9 @@ class MessageResponse(BaseModel):
     recipient_id: Optional[int] = None
     content: str
     created_at: str
+    updated_at: Optional[str] = None
     is_read: bool = False
+    is_edited: Optional[bool] = False
 
 class OnlineStatusEvent(BaseModel):
     user_id: int

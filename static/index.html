@@ -333,6 +333,30 @@
     </div>
   </div>
 
+  <!-- Delete Message Confirmation Modal -->
+  <div id="delete-msg-modal" class="modal-overlay hidden">
+    <div class="modal-card modal-danger" style="max-width: 400px;">
+      <div class="modal-header">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <div class="modal-danger-icon" style="width: 36px; height: 36px; font-size: 16px;">🗑️</div>
+          <div>
+            <h3 style="font-size: 16px; color: #f87171; font-weight: 700;">Delete Message</h3>
+            <p class="modal-subtext" style="font-size: 11.5px; color: var(--text-muted); margin-top: 2px;">This action cannot be undone</p>
+          </div>
+        </div>
+        <button id="close-delete-msg-btn" class="modal-close-btn">✕</button>
+      </div>
+      <div class="modal-body" style="margin-top: 14px; font-size: 13.5px; line-height: 1.5; color: var(--text-secondary);">
+        <p>Are you sure you want to permanently delete this message?</p>
+        <div id="delete-msg-preview" class="delete-msg-preview-box"></div>
+      </div>
+      <div style="display: flex; gap: 8px; margin-top: 20px; justify-content: flex-end;">
+        <button type="button" id="cancel-delete-msg-btn" class="btn-secondary" style="padding: 7px 14px; font-size: 12.5px;">Cancel</button>
+        <button type="button" id="confirm-delete-msg-btn" class="btn-danger" style="padding: 7px 14px; font-size: 12.5px; width: auto;">Delete Message</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Command Palette / Quick Switcher Modal (Ctrl+K) -->
   <div id="cmd-palette-modal" class="modal-overlay hidden">
     <div class="cmd-palette-card">

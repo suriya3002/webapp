@@ -170,8 +170,58 @@ async def run_tests():
             assert any(m["content"] == reply_text for m in alice_dm_history.json())
             print("   Alice verified Bob's reply in direct message history.")
 
-            # 8. Test Users List and Presence
-            print("8. Testing Users List...")
+            # 8. Test Message Editing & Deletion Permissions
+            print("8. Testing Message Editing & Deletion Permissions...")
+            # Bob (non-author) tries to edit Alice's message -> 403 Forbidden
+            bob_edit_fail = await client.put(
+                f"/api/messages/{msg_id}",
+                headers={"Authorization": f"Bearer {bob_token}"},
+                json={"content": "Hacked message content!"}
+            )
+            assert bob_edit_fail.status_code == 403, f"Expected 403, got {bob_edit_fail.status_code}"
+            print(f"   Verified: Bob (non-author) was denied edit (403 Forbidden): {bob_edit_fail.json()['detail']}")
+
+            # Alice (author) edits her message -> 200 OK
+            alice_edited_content = f"Hello from automated test in #general! (EDITED: {test_suffix})"
+            alice_edit_success = await client.put(
+                f"/api/messages/{msg_id}",
+                headers={"Authorization": f"Bearer {alice_token}"},
+                json={"content": alice_edited_content}
+            )
+            assert alice_edit_success.status_code == 200, f"Edit failed: {alice_edit_success.text}"
+            edited_data = alice_edit_success.json()
+            assert edited_data["content"] == alice_edited_content
+            assert edited_data["is_edited"] is True
+            print(f"   Verified: Alice (author) edited her message successfully (is_edited: {edited_data['is_edited']})")
+
+            # Bob (non-author) tries to delete Alice's message -> 403 Forbidden
+            bob_del_fail = await client.delete(
+                f"/api/messages/{msg_id}",
+                headers={"Authorization": f"Bearer {bob_token}"}
+            )
+            assert bob_del_fail.status_code == 403, f"Expected 403, got {bob_del_fail.status_code}"
+            print(f"   Verified: Bob (non-author) was denied delete (403 Forbidden): {bob_del_fail.json()['detail']}")
+
+            # Alice (author) deletes her message -> 200 OK
+            alice_del_success = await client.delete(
+                f"/api/messages/{msg_id}",
+                headers={"Authorization": f"Bearer {alice_token}"}
+            )
+            assert alice_del_success.status_code == 200, f"Delete failed: {alice_del_success.text}"
+            print(f"   Verified: Alice (author) deleted her message successfully: {alice_del_success.json()['detail']}")
+
+            # Verify message is no longer in room history
+            check_history_res = await client.get(
+                f"/api/rooms/{general_room['id']}/messages",
+                headers={"Authorization": f"Bearer {bob_token}"}
+            )
+            assert check_history_res.status_code == 200
+            current_history = check_history_res.json()
+            assert not any(m["id"] == msg_id for m in current_history), "Deleted message was still found in history!"
+            print("   Verified: Deleted message was completely purged from room message history.")
+
+            # 9. Test Users List and Presence
+            print("9. Testing Users List...")
             users_res = await client.get("/api/users", headers={"Authorization": f"Bearer {alice_token}"})
             assert users_res.status_code == 200
             all_users = users_res.json()
