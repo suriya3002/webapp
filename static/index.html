@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PulseChat — Real-Time Group Rooms & 1-to-1 Conversations</title>
+  <meta name="description" content="A modern, real-time group and 1-to-1 chat web application with live presence, persistent message history, and sleek interface.">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+</head>
+<body>
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Authentication Overlay Modal -->
+  <div id="auth-overlay" class="auth-overlay">
+    <div class="auth-card">
+      <div class="auth-header">
+        <div class="auth-logo">⚡</div>
+        <h2 id="auth-title">Welcome Back</h2>
+        <p id="auth-subtitle">Sign in to join real-time rooms and conversations</p>
+      </div>
+
+      <div class="auth-tabs">
+        <button id="tab-sign-in" class="auth-tab-btn active" type="button">Sign In</button>
+        <button id="tab-sign-up" class="auth-tab-btn" type="button">Create Account</button>
+      </div>
+
+      <form id="auth-form">
+        <div class="form-group">
+          <label for="auth-username">Username or Email</label>
+          <input type="text" id="auth-username" class="form-input" placeholder="e.g. alice" required autocomplete="username">
+        </div>
+
+        <div class="form-group" style="display: none;">
+          <label for="auth-email">Email Address</label>
+          <input type="email" id="auth-email" class="form-input" placeholder="e.g. alice@example.com" autocomplete="email">
+        </div>
+
+        <div class="form-group" id="group-display-name" style="display: none;">
+          <label for="auth-display-name">Display Name</label>
+          <input type="text" id="auth-display-name" class="form-input" placeholder="e.g. Alice Johnson">
+        </div>
+
+        <div class="form-group">
+          <label for="auth-password">Password</label>
+          <input type="password" id="auth-password" class="form-input" placeholder="••••••••" required autocomplete="current-password">
+        </div>
+
+        <div class="form-group" id="group-avatar-color" style="display: none;">
+          <label>Avatar Theme Color</label>
+          <div class="color-picker-row">
+            <div class="color-option selected" data-color="#6366f1" style="background: #6366f1;"></div>
+            <div class="color-option" data-color="#8b5cf6" style="background: #8b5cf6;"></div>
+            <div class="color-option" data-color="#ec4899" style="background: #ec4899;"></div>
+            <div class="color-option" data-color="#06b6d4" style="background: #06b6d4;"></div>
+            <div class="color-option" data-color="#10b981" style="background: #10b981;"></div>
+            <div class="color-option" data-color="#f59e0b" style="background: #f59e0b;"></div>
+          </div>
+        </div>
+
+        <button type="submit" id="auth-submit-btn" class="btn-primary">Sign In</button>
+      </form>
+
+      <!-- Fast Demo User Switcher -->
+      <div class="demo-login-section">
+        <div class="demo-title">Or test instantly with pre-seeded accounts</div>
+        <div class="demo-chips">
+          <button type="button" id="demo-alice" class="demo-chip">
+            <span class="dot" style="background: #8b5cf6;"></span>
+            Alice
+          </button>
+          <button type="button" id="demo-bob" class="demo-chip">
+            <span class="dot" style="background: #06b6d4;"></span>
+            Bob
+          </button>
+          <button type="button" id="demo-charlie" class="demo-chip">
+            <span class="dot" style="background: #10b981;"></span>
+            Charlie
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Application Container -->
+  <div id="app-container" class="app-container">
+    
+    <!-- Left Navigation Rail -->
+    <nav class="nav-rail">
+      <div class="app-brand" title="PulseChat Workspace">⚡</div>
+      <div class="rail-divider"></div>
+      <button class="rail-btn active" title="Chats & Channels">💬</button>
+      
+      <div class="rail-footer">
+        <div id="rail-user-avatar" class="user-rail-avatar" title="My Profile">
+          U
+          <span id="rail-user-badge" class="online-status-badge"></span>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Sidebar: Channels & Direct Messages -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="workspace-title">
+          <span>PulseChat</span>
+          <span class="pulse-connection" title="Connected to Real-time Stream"></span>
+        </div>
+      </div>
+
+      <div class="sidebar-search">
+        <div class="search-box">
+          <span>🔍</span>
+          <input type="text" id="sidebar-search-input" placeholder="Search rooms & people...">
+        </div>
+      </div>
+
+      <div class="sidebar-content">
+        <!-- Rooms Section -->
+        <div class="section-header">
+          <span>Group Rooms <span id="channel-count">(0)</span></span>
+          <button id="open-create-room-btn" class="section-action-btn" title="Create Room">+</button>
+        </div>
+        <div id="channel-list" class="channel-list">
+          <!-- Dynamically populated -->
+        </div>
+
+        <!-- Direct Messages Section -->
+        <div class="section-header">
+          <span>Direct Messages <span id="online-user-count">(0 online)</span></span>
+        </div>
+        <div id="user-list" class="user-list">
+          <!-- Dynamically populated -->
+        </div>
+      </div>
+
+      <!-- Current User Footer in Sidebar -->
+      <div class="sidebar-user-footer">
+        <div class="user-avatar-wrap">
+          <div id="sidebar-user-avatar" class="user-avatar" style="background: #6366f1;">U</div>
+          <span id="sidebar-user-badge" class="user-presence-dot online"></span>
+        </div>
+        <div class="footer-user-info">
+          <div id="sidebar-user-name" class="footer-user-name">Loading...</div>
+          <div id="sidebar-user-tag" class="footer-user-tag">@loading</div>
+        </div>
+        <button id="logout-btn" class="logout-btn" title="Sign Out">🚪</button>
+      </div>
+    </aside>
+
+    <!-- Main Chat Feed & Header -->
+    <main class="chat-main">
+      <header class="chat-header" id="chat-header">
+        <div class="chat-target-meta">
+          <div id="chat-target-icon" style="font-size: 22px; width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; color: #fff;">
+            💬
+          </div>
+          <div>
+            <div id="chat-target-title" class="chat-target-title">#general</div>
+            <div id="chat-target-desc" class="chat-target-desc">General discussions</div>
+          </div>
+          <div id="chat-target-badge" class="chat-target-badge"></div>
+        </div>
+
+        <div class="header-actions">
+          <button id="toggle-details-btn" class="header-btn" title="Toggle Channel / User Details">
+            <span>ℹ️</span> Details
+          </button>
+        </div>
+      </header>
+
+      <!-- Message History Container -->
+      <div id="messages-container" class="messages-container">
+        <!-- Rendered by app.js -->
+      </div>
+
+      <!-- Typing Indicator -->
+      <div id="typing-bar" class="typing-bar" style="visibility: hidden;">
+        <div class="typing-dots">
+          <span class="typing-dot"></span>
+          <span class="typing-dot"></span>
+          <span class="typing-dot"></span>
+        </div>
+        <span id="typing-text">Someone is typing...</span>
+      </div>
+
+      <!-- Chat Input Area -->
+      <div class="chat-input-area">
+        <form id="chat-form" class="chat-input-card">
+          <div class="input-row">
+            <textarea id="chat-input" class="chat-textarea" rows="1" placeholder="Type a message... (Enter to send, Shift+Enter for new line)"></textarea>
+            <div class="input-actions">
+              <button type="button" id="emoji-toggle-btn" class="icon-btn" title="Add emoji">😊</button>
+              <button type="submit" id="send-btn" class="send-btn" title="Send message">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="22" y1="2" x2="11" y2="13"></line>
+                  <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- Quick Emoji Popover -->
+          <div id="emoji-popover" class="emoji-picker-popover hidden">
+            <button type="button" class="emoji-btn">👍</button>
+            <button type="button" class="emoji-btn">❤️</button>
+            <button type="button" class="emoji-btn">🔥</button>
+            <button type="button" class="emoji-btn">🎉</button>
+            <button type="button" class="emoji-btn">🚀</button>
+            <button type="button" class="emoji-btn">😄</button>
+            <button type="button" class="emoji-btn">😂</button>
+            <button type="button" class="emoji-btn">🙌</button>
+            <button type="button" class="emoji-btn">👏</button>
+            <button type="button" class="emoji-btn">✨</button>
+            <button type="button" class="emoji-btn">💯</button>
+            <button type="button" class="emoji-btn">💡</button>
+          </div>
+        </form>
+      </div>
+    </main>
+
+    <!-- Right Drawer: Details Panel -->
+    <aside id="details-panel" class="details-panel collapsed">
+      <div class="details-header">
+        <h4 style="font-size: 14px;">Conversation Details</h4>
+        <button id="close-details-btn" class="modal-close-btn">✕</button>
+      </div>
+      <div id="details-content" class="details-content">
+        <!-- Rendered dynamically -->
+      </div>
+    </aside>
+
+  </div>
+
+  <!-- Create Room Modal -->
+  <div id="create-room-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 style="font-size: 18px;">Create New Channel</h3>
+        <button id="close-room-modal-btn" class="modal-close-btn">✕</button>
+      </div>
+      <form id="create-room-form">
+        <div class="form-group">
+          <label for="room-name-input">Channel Name</label>
+          <input type="text" id="room-name-input" class="form-input" placeholder="e.g. project-launch" required>
+        </div>
+        <div class="form-group">
+          <label for="room-desc-input">Topic / Description</label>
+          <input type="text" id="room-desc-input" class="form-input" placeholder="What is this channel about?">
+        </div>
+        <div class="form-group">
+          <label>Channel Icon</label>
+          <div class="icon-selector-row">
+            <div class="icon-choice selected">💬</div>
+            <div class="icon-choice">🚀</div>
+            <div class="icon-choice">💡</div>
+            <div class="icon-choice">🔥</div>
+            <div class="icon-choice">🎨</div>
+            <div class="icon-choice">🎮</div>
+          </div>
+        </div>
+        <div style="display: flex; gap: 10px; margin-top: 24px;">
+          <button type="button" id="cancel-room-btn" class="btn-primary" style="background: rgba(255, 255, 255, 0.1); box-shadow: none;">Cancel</button>
+          <button type="submit" class="btn-primary">Create Channel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="/static/js/api.js"></script>
+  <script src="/static/js/websocket.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
