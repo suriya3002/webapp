@@ -8,13 +8,19 @@ const App = {
     messages: [],
     typingTimers: new Map(),
     myTypingTimeout: null,
-    unreadCounts: new Map() // 'room-1' or 'user-2' -> number
+    unreadCounts: new Map(), // 'room-1' or 'user-2' -> number
+    soundEnabled: localStorage.getItem("pulse_sound_enabled") !== "false",
+    sidebarFilter: "all",
+    pendingDeleteRoom: null,
+    cmdPaletteItems: [],
+    cmdPaletteActiveIndex: 0
   },
 
   elements: {},
 
   init() {
     this.cacheElements();
+    this.closeEmojiPicker();
     this.bindEvents();
     this.checkSession();
   },
@@ -54,6 +60,15 @@ const App = {
       channelCount: document.getElementById("channel-count"),
       onlineUserCount: document.getElementById("online-user-count"),
       sidebarSearch: document.getElementById("sidebar-search-input"),
+      sidebarSearchBox: document.getElementById("sidebar-search-box"),
+      soundToggleBtn: document.getElementById("sound-toggle-btn"),
+      soundToggleIcon: document.getElementById("sound-toggle-icon"),
+      filterTabs: document.querySelectorAll(".filter-tab"),
+      headerSectionRooms: document.getElementById("header-section-rooms"),
+      headerSectionDms: document.getElementById("header-section-dms"),
+      mobileSidebarToggle: document.getElementById("mobile-sidebar-toggle"),
+      mobileBackdrop: document.getElementById("mobile-backdrop"),
+      appSidebar: document.getElementById("app-sidebar"),
 
       // Chat area
       chatHeader: document.getElementById("chat-header"),
@@ -97,6 +112,18 @@ const App = {
       roomDescInput: document.getElementById("room-desc-input"),
       roomIconChoices: document.querySelectorAll(".icon-choice"),
 
+      // Delete Room Confirmation Modal
+      deleteRoomModal: document.getElementById("delete-room-modal"),
+      deleteRoomNameTarget: document.getElementById("delete-room-name-target"),
+      closeDeleteModalBtn: document.getElementById("close-delete-modal-btn"),
+      cancelDeleteRoomBtn: document.getElementById("cancel-delete-room-btn"),
+      confirmDeleteRoomBtn: document.getElementById("confirm-delete-room-btn"),
+
+      // Command Palette (Ctrl+K)
+      cmdPaletteModal: document.getElementById("cmd-palette-modal"),
+      cmdPaletteInput: document.getElementById("cmd-palette-input"),
+      cmdPaletteResults: document.getElementById("cmd-palette-results"),
+
       // Toast
       toastContainer: document.getElementById("toast-container")
     };
@@ -126,8 +153,87 @@ const App = {
     // Logout
     this.elements.logoutBtn.addEventListener("click", () => this.logout());
 
-    // Sidebar search
-    this.elements.sidebarSearch.addEventListener("input", (e) => this.handleSearch(e.target.value));
+    // Sound toggle
+    this.updateSoundToggleUI();
+    if (this.elements.soundToggleBtn) {
+      this.elements.soundToggleBtn.addEventListener("click", () => {
+        this.state.soundEnabled = !this.state.soundEnabled;
+        localStorage.setItem("pulse_sound_enabled", this.state.soundEnabled);
+        this.updateSoundToggleUI();
+        if (this.state.soundEnabled) {
+          this.playNotificationSound();
+          this.showToast("Notification audio enabled", "info");
+        } else {
+          this.showToast("Notification audio muted", "info");
+        }
+      });
+    }
+
+    // Sidebar filter tabs (All / Channels / DMs)
+    this.elements.filterTabs.forEach(tab => {
+      tab.addEventListener("click", () => {
+        this.elements.filterTabs.forEach(t => t.classList.remove("active"));
+        tab.classList.add("active");
+        this.setSidebarFilter(tab.dataset.filter);
+      });
+    });
+
+    // Mobile sidebar drawer & backdrop
+    if (this.elements.mobileSidebarToggle) {
+      this.elements.mobileSidebarToggle.addEventListener("click", () => {
+        this.elements.appSidebar.classList.toggle("mobile-open");
+        this.elements.mobileBackdrop.classList.toggle("hidden", !this.elements.appSidebar.classList.contains("mobile-open"));
+      });
+    }
+    if (this.elements.mobileBackdrop) {
+      this.elements.mobileBackdrop.addEventListener("click", () => {
+        this.elements.appSidebar.classList.remove("mobile-open");
+        this.elements.mobileBackdrop.classList.add("hidden");
+      });
+    }
+
+    // Command Palette Trigger: Ctrl+K / Cmd+K or clicking search box
+    window.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        this.openCommandPalette();
+      } else if (e.key === "Escape") {
+        this.closeCommandPalette();
+        this.hideDeleteModal();
+        this.closeEmojiPicker();
+      }
+    });
+
+    if (this.elements.sidebarSearchBox) {
+      this.elements.sidebarSearchBox.addEventListener("click", () => {
+        this.openCommandPalette();
+      });
+    }
+
+    if (this.elements.cmdPaletteInput) {
+      this.elements.cmdPaletteInput.addEventListener("input", (e) => {
+        this.filterCommandPalette(e.target.value);
+      });
+      this.elements.cmdPaletteInput.addEventListener("keydown", (e) => {
+        this.handleCommandPaletteKeydown(e);
+      });
+    }
+
+    // Delete Room Custom Modal listeners
+    if (this.elements.closeDeleteModalBtn) {
+      this.elements.closeDeleteModalBtn.addEventListener("click", () => this.hideDeleteModal());
+    }
+    if (this.elements.cancelDeleteRoomBtn) {
+      this.elements.cancelDeleteRoomBtn.addEventListener("click", () => this.hideDeleteModal());
+    }
+    if (this.elements.confirmDeleteRoomBtn) {
+      this.elements.confirmDeleteRoomBtn.addEventListener("click", () => this.executeDeleteRoom());
+    }
+
+    // Sidebar search input inside sidebar
+    if (this.elements.sidebarSearch) {
+      this.elements.sidebarSearch.addEventListener("input", (e) => this.handleSearch(e.target.value));
+    }
 
     // Chat input auto-expand & submit
     this.elements.chatInput.addEventListener("input", () => {
@@ -153,14 +259,20 @@ const App = {
     });
 
     document.addEventListener("click", (e) => {
-      if (!this.elements.emojiPopover.contains(e.target) && e.target !== this.elements.emojiToggleBtn) {
-        this.elements.emojiPopover.classList.add("hidden");
+      if (this.elements.emojiPopover && !this.elements.emojiPopover.contains(e.target) && !this.elements.emojiToggleBtn.contains(e.target)) {
+        this.closeEmojiPicker();
+      }
+      if (this.elements.cmdPaletteModal && !this.elements.cmdPaletteModal.classList.contains("hidden")) {
+        if (!this.elements.cmdPaletteModal.querySelector(".cmd-palette-card").contains(e.target) && e.target !== this.elements.sidebarSearchBox) {
+          this.closeCommandPalette();
+        }
       }
     });
 
     if (this.elements.closeEmojiPickerBtn) {
-      this.elements.closeEmojiPickerBtn.addEventListener("click", () => {
-        this.elements.emojiPopover.classList.add("hidden");
+      this.elements.closeEmojiPickerBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.closeEmojiPicker();
       });
     }
 
@@ -532,6 +644,14 @@ const App = {
       await this.loadMessagesHistory();
     }
 
+    // Auto-close mobile sidebar drawer on selection
+    if (this.elements.appSidebar) {
+      this.elements.appSidebar.classList.remove("mobile-open");
+    }
+    if (this.elements.mobileBackdrop) {
+      this.elements.mobileBackdrop.classList.add("hidden");
+    }
+
     this.elements.chatInput.focus();
   },
 
@@ -602,6 +722,33 @@ const App = {
     }
     this.elements.messagesContainer.appendChild(welcome);
 
+    // If chat has no messages, show interactive prompt suggestions
+    if (this.state.messages.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty-state-card";
+      const targetName = active.type === "room" ? `#${active.data.name}` : active.data.display_name;
+      empty.innerHTML = `
+        <div class="empty-state-icon">${active.type === 'room' ? (active.data.icon || '💬') : '💬'}</div>
+        <div class="empty-state-title">No messages in ${targetName} yet</div>
+        <div class="empty-state-desc">Break the ice! Choose a prompt below or start typing.</div>
+        <div class="empty-state-suggestions">
+          <button class="suggestion-chip" data-text="👋 Hello everyone!">👋 Hello everyone!</button>
+          <button class="suggestion-chip" data-text="🚀 Sharing a quick project update...">🚀 Sharing an update</button>
+          <button class="suggestion-chip" data-text="💡 Brainstorming session today?">💡 Brainstorm ideas</button>
+          <button class="suggestion-chip" data-text="☕ Anyone free for a quick sync?">☕ Quick sync?</button>
+        </div>
+      `;
+      empty.querySelectorAll(".suggestion-chip").forEach(chip => {
+        chip.addEventListener("click", () => {
+          this.elements.chatInput.value = chip.dataset.text;
+          this.elements.chatInput.focus();
+          this.elements.chatForm.dispatchEvent(new Event("submit"));
+        });
+      });
+      this.elements.messagesContainer.appendChild(empty);
+      return;
+    }
+
     let lastDate = "";
 
     this.state.messages.forEach(msg => {
@@ -637,9 +784,19 @@ const App = {
         ${msg.sender_display_name ? msg.sender_display_name.charAt(0).toUpperCase() : 'U'}
       </div>
       <div class="message-content-wrap">
+        <div class="message-reactions-bar">
+          <button type="button" class="quick-react-btn" data-emoji="👍" title="React 👍">👍</button>
+          <button type="button" class="quick-react-btn" data-emoji="❤️" title="React ❤️">❤️</button>
+          <button type="button" class="quick-react-btn" data-emoji="😂" title="React 😂">😂</button>
+          <button type="button" class="quick-react-btn" data-emoji="🚀" title="React 🚀">🚀</button>
+          <button type="button" class="quick-react-btn" data-emoji="🔥" title="React 🔥">🔥</button>
+        </div>
         <div class="message-meta">
           <span class="message-author">${isMe ? 'You' : msg.sender_display_name}</span>
-          <span class="message-time">${timeStr}</span>
+          <span class="message-time">
+            ${timeStr}
+            ${isMe ? `<span class="read-receipt" title="Delivered & Read">✓✓</span>` : ''}
+          </span>
         </div>
         <div class="message-bubble">
           <div class="message-text">${formattedContent}</div>
@@ -653,6 +810,13 @@ const App = {
     row.querySelector(".copy-btn").addEventListener("click", () => {
       navigator.clipboard.writeText(msg.content);
       this.showToast("Copied to clipboard", "success");
+    });
+
+    row.querySelectorAll(".quick-react-btn").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.sendQuickReaction(btn.dataset.emoji);
+      });
     });
 
     return row;
@@ -860,16 +1024,44 @@ const App = {
     }
   },
 
-  async confirmAndDeleteRoom(roomId, roomName) {
-    const confirmed = window.confirm(`Are you sure you want to delete #${roomName}?\n\nOnly the creator of this group is allowed to delete it. All room messages will be permanently removed.`);
-    if (!confirmed) return;
+  confirmAndDeleteRoom(roomId, roomName) {
+    this.state.pendingDeleteRoom = { id: roomId, name: roomName };
+    if (this.elements.deleteRoomNameTarget) {
+      this.elements.deleteRoomNameTarget.textContent = `#${roomName}`;
+    }
+    if (this.elements.deleteRoomModal) {
+      this.elements.deleteRoomModal.classList.remove("hidden");
+    }
+  },
+
+  hideDeleteModal() {
+    this.state.pendingDeleteRoom = null;
+    if (this.elements.deleteRoomModal) {
+      this.elements.deleteRoomModal.classList.add("hidden");
+    }
+  },
+
+  async executeDeleteRoom() {
+    const pending = this.state.pendingDeleteRoom;
+    if (!pending) return;
 
     try {
-      await API.deleteRoom(roomId);
-      this.handleRoomDeleted({ room_id: roomId, room_name: roomName });
-      this.showToast(`Channel #${roomName} deleted successfully.`, "success");
+      if (this.elements.confirmDeleteRoomBtn) {
+        this.elements.confirmDeleteRoomBtn.disabled = true;
+        this.elements.confirmDeleteRoomBtn.textContent = "Deleting...";
+      }
+
+      await API.deleteRoom(pending.id);
+      this.hideDeleteModal();
+      this.handleRoomDeleted({ room_id: pending.id, room_name: pending.name });
+      this.showToast(`Channel #${pending.name} deleted successfully.`, "success");
     } catch (err) {
       this.showToast(`Failed to delete room: ${err.message}`, "error");
+    } finally {
+      if (this.elements.confirmDeleteRoomBtn) {
+        this.elements.confirmDeleteRoomBtn.disabled = false;
+        this.elements.confirmDeleteRoomBtn.textContent = "Delete Channel";
+      }
     }
   },
 
@@ -1525,6 +1717,12 @@ const App = {
         this.elements.emojiSearchInput.focus();
       }
     } else {
+      this.closeEmojiPicker();
+    }
+  },
+
+  closeEmojiPicker() {
+    if (this.elements.emojiPopover) {
       this.elements.emojiPopover.classList.add("hidden");
     }
   },
@@ -1605,9 +1803,11 @@ const App = {
     input.selectionStart = input.selectionEnd = start + char.length;
     input.focus();
     input.dispatchEvent(new Event("input"));
+    this.closeEmojiPicker();
   },
 
   playNotificationSound() {
+    if (!this.state.soundEnabled) return;
     try {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
       const osc = ctx.createOscillator();
@@ -1624,6 +1824,176 @@ const App = {
     } catch (e) {
       // AudioContext might be blocked until user interaction, ignore safely
     }
+  },
+
+  updateSoundToggleUI() {
+    if (!this.elements.soundToggleIcon) return;
+    if (this.state.soundEnabled) {
+      this.elements.soundToggleIcon.textContent = "🔔";
+      this.elements.soundToggleBtn?.classList.remove("muted");
+      this.elements.soundToggleBtn?.setAttribute("title", "Audio notifications enabled (Click to mute)");
+    } else {
+      this.elements.soundToggleIcon.textContent = "🔕";
+      this.elements.soundToggleBtn?.classList.add("muted");
+      this.elements.soundToggleBtn?.setAttribute("title", "Audio notifications muted (Click to enable)");
+    }
+  },
+
+  setSidebarFilter(filter) {
+    this.state.sidebarFilter = filter;
+    const showRooms = filter === "all" || filter === "channels";
+    const showDms = filter === "all" || filter === "direct";
+
+    if (this.elements.headerSectionRooms) {
+      this.elements.headerSectionRooms.style.display = showRooms ? "flex" : "none";
+    }
+    if (this.elements.channelList) {
+      this.elements.channelList.style.display = showRooms ? "flex" : "none";
+    }
+    if (this.elements.headerSectionDms) {
+      this.elements.headerSectionDms.style.display = showDms ? "flex" : "none";
+    }
+    if (this.elements.userList) {
+      this.elements.userList.style.display = showDms ? "flex" : "none";
+    }
+  },
+
+  async sendQuickReaction(emoji) {
+    const active = this.state.activeChat;
+    if (!active) return;
+
+    try {
+      if (active.type === "room") {
+        const sentViaWs = wsClient.sendRoomMessage(active.id, emoji);
+        if (!sentViaWs) await API.sendRoomMessage(active.id, emoji);
+      } else {
+        const sentViaWs = wsClient.sendDirectMessage(active.id, emoji);
+        if (!sentViaWs) await API.sendDirectMessage(active.id, emoji);
+      }
+    } catch (err) {
+      this.showToast("Failed to react: " + err.message, "error");
+    }
+  },
+
+  openCommandPalette() {
+    if (!this.elements.cmdPaletteModal) return;
+    this.elements.cmdPaletteModal.classList.remove("hidden");
+    if (this.elements.cmdPaletteInput) {
+      this.elements.cmdPaletteInput.value = "";
+      this.elements.cmdPaletteInput.focus();
+    }
+    this.filterCommandPalette("");
+  },
+
+  closeCommandPalette() {
+    if (!this.elements.cmdPaletteModal) return;
+    this.elements.cmdPaletteModal.classList.add("hidden");
+  },
+
+  filterCommandPalette(query) {
+    const q = (query || "").toLowerCase().trim();
+    const items = [];
+
+    // Add channels
+    this.state.rooms.forEach(room => {
+      if (!q || room.name.toLowerCase().includes(q) || (room.description && room.description.toLowerCase().includes(q))) {
+        items.push({
+          type: "room",
+          id: room.id,
+          title: `#${room.name}`,
+          sub: room.description || "Channel",
+          icon: room.icon || "💬",
+          badge: "Channel"
+        });
+      }
+    });
+
+    // Add colleagues
+    this.state.users.forEach(user => {
+      if (user.id !== this.state.currentUser?.id) {
+        if (!q || user.display_name.toLowerCase().includes(q) || user.username.toLowerCase().includes(q)) {
+          items.push({
+            type: "direct",
+            id: user.id,
+            title: user.display_name,
+            sub: `@${user.username} • ${user.is_online ? 'Online' : 'Offline'}`,
+            icon: user.display_name.charAt(0).toUpperCase(),
+            color: user.avatar_color || "#6366f1",
+            badge: "Direct"
+          });
+        }
+      }
+    });
+
+    this.state.cmdPaletteItems = items;
+    this.state.cmdPaletteActiveIndex = 0;
+    this.renderCommandPaletteResults();
+  },
+
+  renderCommandPaletteResults() {
+    const container = this.elements.cmdPaletteResults;
+    if (!container) return;
+
+    if (this.state.cmdPaletteItems.length === 0) {
+      container.innerHTML = `
+        <div style="text-align: center; color: var(--text-muted); padding: 24px; font-size: 13px;">
+          No channels or colleagues match your search
+        </div>
+      `;
+      return;
+    }
+
+    container.innerHTML = this.state.cmdPaletteItems.map((item, idx) => `
+      <div class="cmd-palette-item ${idx === this.state.cmdPaletteActiveIndex ? 'active' : ''}" data-idx="${idx}">
+        <div class="cmd-palette-item-icon" style="${item.color ? `background-color: ${item.color}; color: #fff; font-weight: 700;` : ''}">
+          ${item.icon}
+        </div>
+        <div class="cmd-palette-item-content">
+          <div class="cmd-palette-item-title">${item.title}</div>
+          <div class="cmd-palette-item-sub">${item.sub}</div>
+        </div>
+        <span class="cmd-palette-item-badge">${item.badge}</span>
+      </div>
+    `).join('');
+
+    container.querySelectorAll(".cmd-palette-item").forEach(el => {
+      el.addEventListener("click", () => {
+        const idx = parseInt(el.dataset.idx, 10);
+        this.selectCommandPaletteItem(idx);
+      });
+      el.addEventListener("mouseenter", () => {
+        this.state.cmdPaletteActiveIndex = parseInt(el.dataset.idx, 10);
+        container.querySelectorAll(".cmd-palette-item").forEach((it, i) => {
+          it.classList.toggle("active", i === this.state.cmdPaletteActiveIndex);
+        });
+      });
+    });
+  },
+
+  handleCommandPaletteKeydown(e) {
+    const total = this.state.cmdPaletteItems.length;
+    if (total === 0) return;
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      this.state.cmdPaletteActiveIndex = (this.state.cmdPaletteActiveIndex + 1) % total;
+      this.renderCommandPaletteResults();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      this.state.cmdPaletteActiveIndex = (this.state.cmdPaletteActiveIndex - 1 + total) % total;
+      this.renderCommandPaletteResults();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      this.selectCommandPaletteItem(this.state.cmdPaletteActiveIndex);
+    }
+  },
+
+  selectCommandPaletteItem(idx) {
+    const item = this.state.cmdPaletteItems[idx];
+    if (!item) return;
+
+    this.closeCommandPalette();
+    this.selectChat(item.type, item.id);
   },
 
   showToast(message, type = "info") {

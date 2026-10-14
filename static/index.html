@@ -102,33 +102,44 @@
     </nav>
 
     <!-- Sidebar: Channels & Direct Messages -->
-    <aside class="sidebar">
+    <aside class="sidebar" id="app-sidebar">
       <div class="sidebar-header">
         <div class="workspace-title">
-          <span>PulseChat</span>
+          <span class="brand-text">⚡ PulseChat</span>
           <span class="pulse-connection" title="Connected to Real-time Stream"></span>
         </div>
+        <button type="button" id="sound-toggle-btn" class="icon-btn-sm" title="Toggle audio sound effects">
+          <span id="sound-toggle-icon">🔔</span>
+        </button>
       </div>
 
       <div class="sidebar-search">
-        <div class="search-box">
+        <div class="search-box" id="sidebar-search-box">
           <span>🔍</span>
-          <input type="text" id="sidebar-search-input" placeholder="Search rooms & people...">
+          <input type="text" id="sidebar-search-input" placeholder="Search or Jump to... (Ctrl+K)">
+          <kbd class="search-shortcut">Ctrl+K</kbd>
         </div>
+      </div>
+
+      <!-- Quick Filter Tabs -->
+      <div class="sidebar-filter-tabs">
+        <button type="button" class="filter-tab active" data-filter="all">All</button>
+        <button type="button" class="filter-tab" data-filter="channels">Channels</button>
+        <button type="button" class="filter-tab" data-filter="direct">DMs</button>
       </div>
 
       <div class="sidebar-content">
         <!-- Rooms Section -->
-        <div class="section-header">
+        <div class="section-header" id="header-section-rooms">
           <span>Group Rooms <span id="channel-count">(0)</span></span>
-          <button id="open-create-room-btn" class="section-action-btn" title="Create Room">+</button>
+          <button id="open-create-room-btn" class="section-action-btn" title="Create New Channel">+</button>
         </div>
         <div id="channel-list" class="channel-list">
           <!-- Dynamically populated -->
         </div>
 
         <!-- Direct Messages Section -->
-        <div class="section-header">
+        <div class="section-header" id="header-section-dms">
           <span>Direct Messages <span id="online-user-count">(0 online)</span></span>
         </div>
         <div id="user-list" class="user-list">
@@ -153,25 +164,33 @@
     <!-- Main Chat Feed & Header -->
     <main class="chat-main">
       <header class="chat-header" id="chat-header">
-        <div class="chat-target-meta">
-          <div id="chat-target-icon" style="font-size: 22px; width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; color: #fff;">
-            💬
-          </div>
-          <div>
-            <div id="chat-target-title" class="chat-target-title">#general</div>
-            <div id="chat-target-desc" class="chat-target-desc">General discussions</div>
-          </div>
-          <div id="chat-target-badge" class="chat-target-badge"></div>
-          <div id="chat-privacy-badge" class="chat-privacy-badge hidden" title="End-to-end private 1-on-1 conversation">
-            <span>🔒</span> Private 1-on-1
+        <div style="display: flex; align-items: center; gap: 12px; overflow: hidden;">
+          <button type="button" id="mobile-sidebar-toggle" class="header-btn mobile-menu-btn" title="Toggle Sidebar">
+            <span>☰</span>
+          </button>
+          <div class="chat-target-meta">
+            <div id="chat-target-icon" style="font-size: 20px; width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; color: #fff;">
+              💬
+            </div>
+            <div style="overflow: hidden;">
+              <div id="chat-target-title" class="chat-target-title">#general</div>
+              <div id="chat-target-desc" class="chat-target-desc">General discussions</div>
+            </div>
+            <div id="chat-target-badge" class="chat-target-badge"></div>
+            <div id="chat-privacy-badge" class="chat-privacy-badge hidden" title="End-to-end private 1-on-1 conversation">
+              <span>🔒</span> Private 1-on-1
+            </div>
           </div>
         </div>
 
         <div class="header-actions">
-          <button id="delete-room-header-btn" class="header-btn btn-danger-subtle hidden" title="Delete this group (Creator only)">
+          <button type="button" id="cmd-palette-btn" class="header-btn cmd-btn" title="Quick Switcher (Ctrl+K)">
+            <span>🔍</span> <span class="kbd-label">Ctrl+K</span>
+          </button>
+          <button type="button" id="delete-room-header-btn" class="header-btn btn-danger-subtle hidden" title="Delete this group (Creator only)">
             <span>🗑️</span> Delete Group
           </button>
-          <button id="toggle-details-btn" class="header-btn" title="Toggle Channel / User Details">
+          <button type="button" id="toggle-details-btn" class="header-btn" title="Toggle Channel / User Details">
             <span>ℹ️</span> Details
           </button>
         </div>
@@ -286,6 +305,58 @@
       </form>
     </div>
   </div>
+
+  <!-- Delete Room Confirmation Modal -->
+  <div id="delete-room-modal" class="modal-overlay hidden">
+    <div class="modal-card modal-danger">
+      <div class="modal-header">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <div class="modal-danger-icon">⚠️</div>
+          <div>
+            <h3 style="font-size: 18px; color: #f87171; font-weight: 700;">Delete Channel</h3>
+            <p class="modal-subtext" style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">This action is permanent and irreversible</p>
+          </div>
+        </div>
+        <button id="close-delete-modal-btn" class="modal-close-btn">✕</button>
+      </div>
+      <div class="modal-body" style="margin-top: 16px; font-size: 14px; line-height: 1.6; color: var(--text-secondary);">
+        <p>Are you sure you want to permanently delete <strong id="delete-room-name-target" style="color: #fff;">#channel</strong>?</p>
+        <p style="margin-top: 8px; font-size: 13px;">All message history, shared links, and member activity in this room will be purged from the database.</p>
+        <div class="creator-badge-notice">
+          <span>👑</span> Only you as the channel creator have permission to delete this room.
+        </div>
+      </div>
+      <div style="display: flex; gap: 10px; margin-top: 24px; justify-content: flex-end;">
+        <button type="button" id="cancel-delete-room-btn" class="btn-secondary">Cancel</button>
+        <button type="button" id="confirm-delete-room-btn" class="btn-danger">Delete Channel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Command Palette / Quick Switcher Modal (Ctrl+K) -->
+  <div id="cmd-palette-modal" class="modal-overlay hidden">
+    <div class="cmd-palette-card">
+      <div class="cmd-palette-header">
+        <span class="cmd-palette-search-icon">🔍</span>
+        <input type="text" id="cmd-palette-input" placeholder="Jump to channel, colleague, or action... (Esc to close)" autocomplete="off">
+        <span class="cmd-palette-esc-badge">ESC</span>
+      </div>
+      <div class="cmd-palette-body">
+        <div class="cmd-palette-section-title">QUICK SWITCH</div>
+        <div id="cmd-palette-results" class="cmd-palette-results">
+          <!-- Dynamically populated -->
+        </div>
+      </div>
+      <div class="cmd-palette-footer">
+        <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span>
+        <span><kbd>↵</kbd> Select</span>
+        <span><kbd>ESC</kbd> Close</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Mobile Drawer Backdrop -->
+  <div id="mobile-backdrop" class="mobile-backdrop hidden"></div>
 
   <!-- Scripts -->
   <script src="/static/js/api.js"></script>
