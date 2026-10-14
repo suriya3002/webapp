@@ -1,5 +1,6 @@
 import asyncio
 import sys
+import uuid
 from httpx import AsyncClient, ASGITransport
 from app.main import app
 from app.database import init_db
@@ -27,20 +28,25 @@ async def run_tests():
             bob_id = bob_login.json()["user"]["id"]
             print(f"   Bob logged in successfully. ID: {bob_id}")
 
+            charlie_login = await client.post("/api/auth/demo-login/charlie")
+            assert charlie_login.status_code == 200, f"Charlie login failed: {charlie_login.text}"
+            charlie_token = charlie_login.json()["access_token"]
+            charlie_id = charlie_login.json()["user"]["id"]
+            print(f"   Charlie logged in successfully. ID: {charlie_id}")
+
             # 2. Test User Registration
             print("2. Testing User Registration...")
+            test_suffix = uuid.uuid4().hex[:6]
             new_user_payload = {
-                "username": "diana",
-                "email": "diana@example.com",
+                "username": f"user_{test_suffix}",
+                "email": f"user_{test_suffix}@example.com",
                 "password": "securepassword123",
-                "display_name": "Diana Prince",
+                "display_name": f"User {test_suffix}",
                 "avatar_color": "#ec4899"
             }
             reg_res = await client.post("/api/auth/register", json=new_user_payload)
-            if reg_res.status_code == 200:
-                print("   Diana registered successfully!")
-            else:
-                print(f"   Diana registration status: {reg_res.status_code} ({reg_res.json().get('detail')})")
+            assert reg_res.status_code == 200, f"Registration failed: {reg_res.text}"
+            print(f"   {new_user_payload['username']} registered successfully!")
 
             # 3. Test Listing Rooms
             print("3. Testing Rooms List...")
@@ -54,18 +60,36 @@ async def run_tests():
 
             # 4. Test Creating a New Room
             print("4. Testing New Room Creation...")
-            new_room_name = "ai-discussions"
+            new_room_name = f"test-room-{test_suffix}"
             create_room_res = await client.post(
                 "/api/rooms",
                 headers={"Authorization": f"Bearer {alice_token}"},
-                json={"name": new_room_name, "description": "AI models & architectures", "icon": "🤖"}
+                json={"name": new_room_name, "description": "Custom test room for permissions", "icon": "🚀"}
             )
-            assert create_room_res.status_code in (200, 201)
+            assert create_room_res.status_code in (200, 201), f"Create room failed: {create_room_res.text}"
             new_room_id = create_room_res.json()["id"]
             print(f"   Created new room #{new_room_name} with ID {new_room_id}")
 
-            # 5. Test Sending & Persisting Room Messages
-            print("5. Testing Room Message Persistence...")
+            # 5. Test Group Deletion Permissions ("who will create the group they only delete it")
+            print("5. Testing Group Deletion Permissions...")
+            # Bob (not creator) attempts to delete Alice's room -> MUST be 403 Forbidden!
+            bob_delete_res = await client.delete(
+                f"/api/rooms/{new_room_id}",
+                headers={"Authorization": f"Bearer {bob_token}"}
+            )
+            assert bob_delete_res.status_code == 403, f"Expected 403 Forbidden for non-creator, got {bob_delete_res.status_code}"
+            print(f"   Verified: Bob (non-creator) was denied deletion (403 Forbidden): {bob_delete_res.json()['detail']}")
+
+            # Alice (creator) deletes her room -> MUST succeed (200 OK)!
+            alice_delete_res = await client.delete(
+                f"/api/rooms/{new_room_id}",
+                headers={"Authorization": f"Bearer {alice_token}"}
+            )
+            assert alice_delete_res.status_code == 200, f"Creator room delete failed: {alice_delete_res.text}"
+            print(f"   Verified: Alice (creator) successfully deleted her room: {alice_delete_res.json()['detail']}")
+
+            # 6. Test Sending & Persisting Room Messages
+            print("6. Testing Room Message Persistence...")
             msg_content = "Hello from automated test in #general!"
             post_msg_res = await client.post(
                 f"/api/rooms/{general_room['id']}/messages",
@@ -86,9 +110,9 @@ async def run_tests():
             assert any(m["id"] == msg_id for m in history), "Message was not found in room history!"
             print(f"   Verified message persistence: Bob retrieved {len(history)} messages in #{general_room['name']}")
 
-            # 6. Test 1-to-1 Direct Messaging & History Persistence
-            print("6. Testing 1-to-1 Private Direct Messaging...")
-            dm_text = "Hey Bob, this is a secret 1-to-1 private direct message!"
+            # 7. Test 1-to-1 Private Direct Messaging & Privacy Isolation
+            print("7. Testing 1-to-1 Private Direct Messaging & Privacy Isolation...")
+            dm_text = f"Top secret 1-to-1 message for Bob only! Code: {test_suffix}"
             send_dm_res = await client.post(
                 f"/api/messages/direct/{bob_id}",
                 headers={"Authorization": f"Bearer {alice_token}"},
@@ -96,7 +120,7 @@ async def run_tests():
             )
             assert send_dm_res.status_code == 200
             dm_id = send_dm_res.json()["id"]
-            print(f"   Alice sent DM to Bob (ID {dm_id}): '{dm_text}'")
+            print(f"   Alice sent secret DM to Bob (ID {dm_id}): '{dm_text}'")
 
             # Verify Bob can view the conversation history
             bob_dm_history = await client.get(
@@ -108,8 +132,27 @@ async def run_tests():
             assert any(m["id"] == dm_id for m in bob_messages), "DM not found in Bob's direct message history!"
             print(f"   Bob verified DM history with Alice. Total DMs: {len(bob_messages)}")
 
+            # PRIVACY CHECK: Charlie requests his DMs with Alice -> MUST NOT contain Bob's secret message!
+            charlie_dm_history = await client.get(
+                f"/api/messages/direct/{alice_id}",
+                headers={"Authorization": f"Bearer {charlie_token}"}
+            )
+            assert charlie_dm_history.status_code == 200
+            charlie_messages = charlie_dm_history.json()
+            assert not any(m["content"] == dm_text for m in charlie_messages), "PRIVACY VIOLATION: Charlie saw Alice and Bob's private message!"
+            print("   Verified 1-to-1 Privacy: Charlie CANNOT access Alice & Bob's private conversation!")
+
+            # Self-DM prevention check:
+            self_dm_res = await client.post(
+                f"/api/messages/direct/{alice_id}",
+                headers={"Authorization": f"Bearer {alice_token}"},
+                json={"content": "Talking to myself"}
+            )
+            assert self_dm_res.status_code == 400
+            print("   Verified 1-to-1 Privacy: Self-DMs rejected (400 Bad Request)")
+
             # Bob replies to Alice
-            reply_text = "Hey Alice, loud and clear! 1-to-1 chat is working smoothly."
+            reply_text = "Hey Alice, loud and clear! 1-to-1 chat is completely private."
             send_reply_res = await client.post(
                 f"/api/messages/direct/{alice_id}",
                 headers={"Authorization": f"Bearer {bob_token}"},
@@ -127,8 +170,8 @@ async def run_tests():
             assert any(m["content"] == reply_text for m in alice_dm_history.json())
             print("   Alice verified Bob's reply in direct message history.")
 
-            # 7. Test Users List and Presence
-            print("7. Testing Users List...")
+            # 8. Test Users List and Presence
+            print("8. Testing Users List...")
             users_res = await client.get("/api/users", headers={"Authorization": f"Bearer {alice_token}"})
             assert users_res.status_code == 200
             all_users = users_res.json()

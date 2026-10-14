@@ -162,9 +162,15 @@
             <div id="chat-target-desc" class="chat-target-desc">General discussions</div>
           </div>
           <div id="chat-target-badge" class="chat-target-badge"></div>
+          <div id="chat-privacy-badge" class="chat-privacy-badge hidden" title="End-to-end private 1-on-1 conversation">
+            <span>🔒</span> Private 1-on-1
+          </div>
         </div>
 
         <div class="header-actions">
+          <button id="delete-room-header-btn" class="header-btn btn-danger-subtle hidden" title="Delete this group (Creator only)">
+            <span>🗑️</span> Delete Group
+          </button>
           <button id="toggle-details-btn" class="header-btn" title="Toggle Channel / User Details">
             <span>ℹ️</span> Details
           </button>
@@ -192,7 +198,7 @@
           <div class="input-row">
             <textarea id="chat-input" class="chat-textarea" rows="1" placeholder="Type a message... (Enter to send, Shift+Enter for new line)"></textarea>
             <div class="input-actions">
-              <button type="button" id="emoji-toggle-btn" class="icon-btn" title="Add emoji">😊</button>
+              <button type="button" id="emoji-toggle-btn" class="icon-btn" title="Open all emojis">😊</button>
               <button type="submit" id="send-btn" class="send-btn" title="Send message">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
                   <line x1="22" y1="2" x2="11" y2="13"></line>
@@ -202,20 +208,32 @@
             </div>
           </div>
 
-          <!-- Quick Emoji Popover -->
-          <div id="emoji-popover" class="emoji-picker-popover hidden">
-            <button type="button" class="emoji-btn">👍</button>
-            <button type="button" class="emoji-btn">❤️</button>
-            <button type="button" class="emoji-btn">🔥</button>
-            <button type="button" class="emoji-btn">🎉</button>
-            <button type="button" class="emoji-btn">🚀</button>
-            <button type="button" class="emoji-btn">😄</button>
-            <button type="button" class="emoji-btn">😂</button>
-            <button type="button" class="emoji-btn">🙌</button>
-            <button type="button" class="emoji-btn">👏</button>
-            <button type="button" class="emoji-btn">✨</button>
-            <button type="button" class="emoji-btn">💯</button>
-            <button type="button" class="emoji-btn">💡</button>
+          <!-- Full Emoji Picker Palette (Opens all emojis via icon) -->
+          <div id="emoji-popover" class="emoji-picker-container hidden" role="dialog" aria-label="Emoji Picker">
+            <div class="emoji-picker-header">
+              <div class="emoji-search-box">
+                <span class="emoji-search-icon">🔍</span>
+                <input type="text" id="emoji-search-input" placeholder="Search all emojis..." autocomplete="off">
+                <button type="button" id="emoji-search-clear" class="emoji-search-clear hidden" title="Clear search">✕</button>
+              </div>
+              <button type="button" id="close-emoji-picker-btn" class="emoji-picker-close-btn" title="Close emoji picker">✕</button>
+            </div>
+            <div class="emoji-category-tabs" id="emoji-category-tabs">
+              <button type="button" class="emoji-tab-btn active" data-category="smileys" title="Smileys & Emotion">😀</button>
+              <button type="button" class="emoji-tab-btn" data-category="people" title="People & Hands">👋</button>
+              <button type="button" class="emoji-tab-btn" data-category="animals" title="Animals & Nature">🐶</button>
+              <button type="button" class="emoji-tab-btn" data-category="food" title="Food & Drink">🍔</button>
+              <button type="button" class="emoji-tab-btn" data-category="activities" title="Activities & Sports">⚽</button>
+              <button type="button" class="emoji-tab-btn" data-category="objects" title="Objects & Tech">💡</button>
+              <button type="button" class="emoji-tab-btn" data-category="symbols" title="Symbols & Flags">❤️</button>
+            </div>
+            <div class="emoji-picker-body" id="emoji-picker-body">
+              <!-- Dynamically populated with all emojis categorized -->
+            </div>
+            <div class="emoji-picker-footer">
+              <span id="emoji-preview-char" class="emoji-preview-char">😊</span>
+              <span id="emoji-preview-name" class="emoji-preview-name">Select an emoji to insert</span>
+            </div>
           </div>
         </form>
       </div>

@@ -94,6 +94,12 @@ const API = {
     });
   },
 
+  async deleteRoom(roomId) {
+    return this.request(`/api/rooms/${roomId}`, {
+      method: "DELETE"
+    });
+  },
+
   async getRoomMessages(roomId) {
     return this.request(`/api/rooms/${roomId}/messages`);
   },

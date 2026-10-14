@@ -125,3 +125,36 @@ async def post_room_message(
     })
 
     return MessageResponse(**msg_dict)
+
+@router.delete("/{room_id}")
+async def delete_room(
+    room_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete a room. Only the user who created the group is authorized to delete it."""
+    room_res = await db.execute(select(Room).where(Room.id == room_id))
+    room = room_res.scalar_one_or_none()
+    if not room:
+        raise HTTPException(status_code=404, detail="Room not found")
+
+    # Enforce creator-only deletion rule
+    if room.created_by_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permission denied: Only the creator of this group can delete it."
+        )
+
+    room_name = room.name
+    await db.delete(room)
+    await db.commit()
+
+    # Broadcast room deletion to all clients via WebSocket so their list updates in real time
+    await manager.broadcast({
+        "type": "room_deleted",
+        "room_id": room_id,
+        "room_name": room_name
+    })
+
+    return {"detail": f"Room '#{room_name}' deleted successfully", "room_id": room_id}
+

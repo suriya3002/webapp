@@ -26,11 +26,15 @@ async def get_direct_messages(
     if not other_user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    if other_user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Cannot start a private conversation with yourself")
+
     # Fetch messages where (sender == me and recipient == other) OR (sender == other and recipient == me)
     result = await db.execute(
         select(Message)
         .options(selectinload(Message.sender))
         .where(
+            Message.room_id.is_(None),
             or_(
                 and_(Message.sender_id == current_user.id, Message.recipient_id == other_user_id),
                 and_(Message.sender_id == other_user_id, Message.recipient_id == current_user.id),
@@ -44,7 +48,7 @@ async def get_direct_messages(
     # Mark unread messages sent by the other user to current user as read
     await db.execute(
         update(Message)
-        .where(Message.sender_id == other_user_id, Message.recipient_id == current_user.id, Message.is_read == False)
+        .where(Message.room_id.is_(None), Message.sender_id == other_user_id, Message.recipient_id == current_user.id, Message.is_read == False)
         .values(is_read=True)
     )
     await db.commit()
@@ -58,15 +62,19 @@ async def post_direct_message(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Send a direct message to another user."""
+    """Send a private direct message to another user."""
     other_res = await db.execute(select(User).where(User.id == other_user_id))
     other_user = other_res.scalar_one_or_none()
     if not other_user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    if other_user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="Cannot send a private message to yourself")
+
     new_msg = Message(
         sender_id=current_user.id,
         recipient_id=other_user_id,
+        room_id=None,
         content=msg_in.content.strip()
     )
     db.add(new_msg)

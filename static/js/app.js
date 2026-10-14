@@ -61,6 +61,8 @@ const App = {
       chatTargetTitle: document.getElementById("chat-target-title"),
       chatTargetDesc: document.getElementById("chat-target-desc"),
       chatTargetBadge: document.getElementById("chat-target-badge"),
+      chatPrivacyBadge: document.getElementById("chat-privacy-badge"),
+      deleteRoomHeaderBtn: document.getElementById("delete-room-header-btn"),
       toggleDetailsBtn: document.getElementById("toggle-details-btn"),
       detailsPanel: document.getElementById("details-panel"),
       closeDetailsBtn: document.getElementById("close-details-btn"),
@@ -77,6 +79,13 @@ const App = {
       sendBtn: document.getElementById("send-btn"),
       emojiToggleBtn: document.getElementById("emoji-toggle-btn"),
       emojiPopover: document.getElementById("emoji-popover"),
+      emojiSearchInput: document.getElementById("emoji-search-input"),
+      emojiSearchClear: document.getElementById("emoji-search-clear"),
+      closeEmojiPickerBtn: document.getElementById("close-emoji-picker-btn"),
+      emojiCategoryTabs: document.getElementById("emoji-category-tabs"),
+      emojiPickerBody: document.getElementById("emoji-picker-body"),
+      emojiPreviewChar: document.getElementById("emoji-preview-char"),
+      emojiPreviewName: document.getElementById("emoji-preview-name"),
 
       // New Room Modal
       openCreateRoomBtn: document.getElementById("open-create-room-btn"),
@@ -136,10 +145,11 @@ const App = {
 
     this.elements.chatForm.addEventListener("submit", (e) => this.handleSendMessage(e));
 
-    // Emoji picker toggle
+    // Full Emoji Picker Setup & Toggle
+    this.setupEmojiPicker();
     this.elements.emojiToggleBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      this.elements.emojiPopover.classList.toggle("hidden");
+      this.toggleEmojiPicker();
     });
 
     document.addEventListener("click", (e) => {
@@ -148,13 +158,20 @@ const App = {
       }
     });
 
-    document.querySelectorAll(".emoji-btn").forEach(btn => {
-      btn.addEventListener("click", () => {
-        this.elements.chatInput.value += btn.textContent;
-        this.elements.chatInput.focus();
+    if (this.elements.closeEmojiPickerBtn) {
+      this.elements.closeEmojiPickerBtn.addEventListener("click", () => {
         this.elements.emojiPopover.classList.add("hidden");
       });
-    });
+    }
+
+    // Delete group header button (creator only)
+    if (this.elements.deleteRoomHeaderBtn) {
+      this.elements.deleteRoomHeaderBtn.addEventListener("click", () => {
+        if (this.state.activeChat?.type === "room") {
+          this.confirmAndDeleteRoom(this.state.activeChat.id, this.state.activeChat.data.name);
+        }
+      });
+    }
 
     // Right details panel toggle
     this.elements.toggleDetailsBtn.addEventListener("click", () => {
@@ -190,6 +207,7 @@ const App = {
     wsClient.on("chat:direct_message", (msg) => this.handleIncomingDirectMessage(msg));
     wsClient.on("chat:typing", (typingData) => this.handleIncomingTyping(typingData));
     wsClient.on("room:created", (room) => this.handleRoomCreated(room));
+    wsClient.on("room:deleted", (data) => this.handleRoomDeleted(data));
     wsClient.on("connection:change", ({ status }) => {
       console.log("WebSocket status changed:", status);
     });
@@ -372,12 +390,24 @@ const App = {
       item.dataset.roomId = room.id;
 
       const unread = this.state.unreadCounts.get(`room-${room.id}`) || 0;
+      const isCreator = this.state.currentUser && room.created_by_id === this.state.currentUser.id;
 
       item.innerHTML = `
         <span class="item-icon">${room.icon || "💬"}</span>
         <span class="item-name">${room.name}</span>
         ${unread > 0 ? `<span class="unread-badge">${unread}</span>` : ''}
+        ${isCreator ? `<button type="button" class="room-delete-btn" title="Delete Group (Only creator can delete)">🗑️</button>` : ''}
       `;
+
+      if (isCreator) {
+        const delBtn = item.querySelector(".room-delete-btn");
+        if (delBtn) {
+          delBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            this.confirmAndDeleteRoom(room.id, room.name);
+          });
+        }
+      }
 
       item.addEventListener("click", () => this.selectChat("room", room.id));
       this.elements.channelList.appendChild(item);
@@ -437,10 +467,26 @@ const App = {
       this.renderRoomsList();
 
       this.elements.chatTargetIcon.textContent = room.icon || "💬";
+      this.elements.chatTargetIcon.style.backgroundColor = "transparent";
       this.elements.chatTargetTitle.textContent = `#${room.name}`;
       this.elements.chatTargetDesc.textContent = room.description || "Room discussions";
       this.elements.chatTargetBadge.className = "chat-target-badge";
       this.elements.chatTargetBadge.textContent = "";
+
+      // Privacy badge hidden in rooms
+      if (this.elements.chatPrivacyBadge) {
+        this.elements.chatPrivacyBadge.classList.add("hidden");
+      }
+
+      // Show Delete Group button ONLY if current user is the creator
+      const isCreator = this.state.currentUser && room.created_by_id === this.state.currentUser.id;
+      if (this.elements.deleteRoomHeaderBtn) {
+        if (isCreator) {
+          this.elements.deleteRoomHeaderBtn.classList.remove("hidden");
+        } else {
+          this.elements.deleteRoomHeaderBtn.classList.add("hidden");
+        }
+      }
 
       this.elements.chatInput.placeholder = `Message #${room.name}...`;
 
@@ -466,6 +512,16 @@ const App = {
       this.elements.chatTargetDesc.textContent = `@${user.username} • ${user.bio || "Available"}`;
       
       this.updateChatHeaderOnlineStatus(user.is_online);
+
+      // Show Privacy Badge in 1-to-1 conversation
+      if (this.elements.chatPrivacyBadge) {
+        this.elements.chatPrivacyBadge.classList.remove("hidden");
+      }
+
+      // Hide group deletion button in 1-to-1 conversation
+      if (this.elements.deleteRoomHeaderBtn) {
+        this.elements.deleteRoomHeaderBtn.classList.add("hidden");
+      }
 
       this.elements.chatInput.placeholder = `Direct message ${user.display_name}...`;
 
@@ -526,16 +582,22 @@ const App = {
 
     // Welcome banner
     const welcome = document.createElement("div");
-    welcome.className = "channel-welcome-banner";
     if (active.type === "room") {
+      welcome.className = "channel-welcome-banner";
       welcome.innerHTML = `
         <h3>Welcome to #${active.data.name}!</h3>
         <p>This is the start of the #${active.data.name} room. All messages are stored permanently and delivered in real time.</p>
       `;
     } else {
+      welcome.className = "privacy-banner-card";
       welcome.innerHTML = `
-        <h3>Direct Conversation with ${active.data.display_name}</h3>
-        <p>This is the start of your 1-on-1 private conversation history with @${active.data.username}.</p>
+        <span style="font-size: 22px;">🔒</span>
+        <div>
+          <strong>End-to-End Private 1-on-1 Conversation</strong>
+          <p style="margin-top: 3px; font-size: 12px; color: var(--text-secondary);">
+            Messages here are confidential and isolated between you and <strong>${active.data.display_name}</strong> (@${active.data.username}).
+          </p>
+        </div>
       `;
     }
     this.elements.messagesContainer.appendChild(welcome);
@@ -564,12 +626,10 @@ const App = {
   createMessageElement(msg) {
     const isMe = msg.sender_id === this.state.currentUser?.id;
     const row = document.createElement("div");
-    row.className = "message-row";
+    row.className = `message-row ${isMe ? 'outgoing' : 'incoming'}`;
     row.dataset.msgId = msg.id;
 
     const timeStr = new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-    // Format content: convert backtick code blocks & links safely
     const formattedContent = this.formatMessageText(msg.content);
 
     row.innerHTML = `
@@ -578,13 +638,15 @@ const App = {
       </div>
       <div class="message-content-wrap">
         <div class="message-meta">
-          <span class="message-author" style="${isMe ? 'color: #a5b4fc;' : ''}">${msg.sender_display_name}</span>
+          <span class="message-author">${isMe ? 'You' : msg.sender_display_name}</span>
           <span class="message-time">${timeStr}</span>
         </div>
-        <div class="message-text">${formattedContent}</div>
-      </div>
-      <div class="message-actions">
-        <button class="msg-action-btn copy-btn" title="Copy message">📋</button>
+        <div class="message-bubble">
+          <div class="message-text">${formattedContent}</div>
+        </div>
+        <div class="message-actions">
+          <button class="msg-action-btn copy-btn" title="Copy message">📋</button>
+        </div>
       </div>
     `;
 
@@ -722,6 +784,11 @@ const App = {
   },
 
   handleIncomingDirectMessage(msg) {
+    // Privacy guarantee: ignore direct message if current user is neither sender nor recipient
+    if (msg.sender_id !== this.state.currentUser?.id && msg.recipient_id !== this.state.currentUser?.id) {
+      return;
+    }
+
     const active = this.state.activeChat;
     const isRelevantToActive = active?.type === "direct" && 
       (msg.sender_id === active.id || (msg.sender_id === this.state.currentUser?.id && msg.recipient_id === active.id));
@@ -746,8 +813,9 @@ const App = {
     const active = this.state.activeChat;
     if (!active) return;
 
+    // Strict 1-on-1 privacy check: only show typing indicator if the peer is typing TO current user
     const isMatch = (active.type === "room" && active.id === data.room_id) ||
-                    (active.type === "direct" && active.id === data.user_id);
+                    (active.type === "direct" && active.id === data.user_id && data.recipient_id === this.state.currentUser?.id);
 
     if (!isMatch) return;
 
@@ -775,6 +843,36 @@ const App = {
     this.showToast(`New channel #${room.name} created!`, "success");
   },
 
+  handleRoomDeleted(data) {
+    this.state.rooms.delete(data.room_id);
+    this.renderRoomsList();
+
+    if (this.state.activeChat?.type === "room" && this.state.activeChat.id === data.room_id) {
+      this.showToast(`Room #${data.room_name} was deleted by its creator.`, "info");
+      const remainingRooms = Array.from(this.state.rooms.values());
+      if (remainingRooms.length > 0) {
+        const generalRoom = remainingRooms.find(r => r.name === "general") || remainingRooms[0];
+        this.selectChat("room", generalRoom.id);
+      } else {
+        this.state.activeChat = null;
+        this.elements.messagesContainer.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 40px;">No available channels. Create a new one!</div>';
+      }
+    }
+  },
+
+  async confirmAndDeleteRoom(roomId, roomName) {
+    const confirmed = window.confirm(`Are you sure you want to delete #${roomName}?\n\nOnly the creator of this group is allowed to delete it. All room messages will be permanently removed.`);
+    if (!confirmed) return;
+
+    try {
+      await API.deleteRoom(roomId);
+      this.handleRoomDeleted({ room_id: roomId, room_name: roomName });
+      this.showToast(`Channel #${roomName} deleted successfully.`, "success");
+    } catch (err) {
+      this.showToast(`Failed to delete room: ${err.message}`, "error");
+    }
+  },
+
   async handleCreateRoom(e) {
     e.preventDefault();
     const name = this.elements.roomNameInput.value.trim();
@@ -800,6 +898,9 @@ const App = {
   renderRoomDetails(room) {
     const membersList = Array.from(this.state.users.values());
     const onlineMembers = membersList.filter(u => u.is_online);
+    const isCreator = this.state.currentUser && room.created_by_id === this.state.currentUser.id;
+    const creatorUser = room.created_by_id ? this.state.users.get(room.created_by_id) : null;
+    const creatorName = isCreator ? "You" : (creatorUser ? creatorUser.display_name : "Workspace Admin");
 
     this.elements.detailsContent.innerHTML = `
       <div class="details-profile-card">
@@ -808,7 +909,25 @@ const App = {
         </div>
         <div class="details-name">#${room.name}</div>
         <div class="details-bio">${room.description || "No topic set for this room"}</div>
+        <div style="margin-top: 8px;">
+          ${isCreator 
+            ? `<div class="creator-badge">👑 You created this group</div>` 
+            : `<div style="font-size: 11px; color: var(--text-muted);">🛡️ Created by ${creatorName} (Protected Group)</div>`
+          }
+        </div>
       </div>
+
+      ${isCreator ? `
+        <div style="margin-bottom: 20px;">
+          <button id="delete-room-details-btn" class="btn-danger" type="button">
+            <span>🗑️</span> Delete This Group
+          </button>
+          <div style="font-size: 11px; color: var(--text-muted); text-align: center; margin-top: 6px;">
+            Only the creator of this group has permission to delete it.
+          </div>
+        </div>
+      ` : ''}
+
       <div class="details-section-title">Members (${onlineMembers.length} online / ${membersList.length} total)</div>
       <div style="display: flex; flex-direction: column; gap: 8px;">
         ${membersList.map(u => `
@@ -825,6 +944,13 @@ const App = {
         `).join('')}
       </div>
     `;
+
+    if (isCreator) {
+      const delBtn = document.getElementById("delete-room-details-btn");
+      if (delBtn) {
+        delBtn.addEventListener("click", () => this.confirmAndDeleteRoom(room.id, room.name));
+      }
+    }
   },
 
   renderUserDetails(user) {
@@ -838,6 +964,18 @@ const App = {
         <div class="details-username">@${user.username}</div>
         <div class="details-bio">${user.bio || "No status set"}</div>
       </div>
+
+      <!-- End-to-End Privacy Notice -->
+      <div class="privacy-banner-card" style="margin-bottom: 20px;">
+        <span style="font-size: 18px;">🔒</span>
+        <div>
+          <strong>Strictly Private Conversation</strong>
+          <p style="font-size: 11px; margin-top: 4px; color: var(--text-secondary);">
+            Messages exchanged here are visible only to you and @${user.username}. They are never shared with group channels.
+          </p>
+        </div>
+      </div>
+
       <div class="details-section-title">User Information</div>
       <div style="display: flex; flex-direction: column; gap: 12px; font-size: 13px;">
         <div>
@@ -864,6 +1002,609 @@ const App = {
       const name = item.querySelector(".item-name").textContent.toLowerCase();
       item.style.display = name.includes(q) ? "flex" : "none";
     });
+  },
+
+  // Comprehensive Categorized Emoji Database ("Open all emojis")
+  EMOJI_DATA: {
+    smileys: [
+      { char: "😀", name: "Grinning Face" },
+      { char: "😃", name: "Grinning Face with Big Eyes" },
+      { char: "😄", name: "Grinning Face with Smiling Eyes" },
+      { char: "😁", name: "Beaming Face with Smiling Eyes" },
+      { char: "😆", name: "Grinning Squinting Face" },
+      { char: "😅", name: "Grinning Face with Sweat" },
+      { char: "🤣", name: "Rolling on the Floor Laughing" },
+      { char: "😂", name: "Face with Tears of Joy" },
+      { char: "🙂", name: "Slightly Smiling Face" },
+      { char: "🙃", name: "Upside-Down Face" },
+      { char: "😉", name: "Winking Face" },
+      { char: "😊", name: "Smiling Face with Smiling Eyes" },
+      { char: "😇", name: "Smiling Face with Halo" },
+      { char: "🥰", name: "Smiling Face with Hearts" },
+      { char: "😍", name: "Heart Eyes" },
+      { char: "🤩", name: "Star-Struck" },
+      { char: "😘", name: "Face Blowing a Kiss" },
+      { char: "😗", name: "Kissing Face" },
+      { char: "😚", name: "Kissing Face with Closed Eyes" },
+      { char: "😋", name: "Face Savoring Food" },
+      { char: "😛", name: "Face with Tongue" },
+      { char: "😜", name: "Winking Face with Tongue" },
+      { char: "🤪", name: "Zany Face" },
+      { char: "😝", name: "Squinting Face with Tongue" },
+      { char: "🤗", name: "Hugging Face" },
+      { char: "🤭", name: "Face with Hand Over Mouth" },
+      { char: "🤫", name: "Shushing Face" },
+      { char: "🤔", name: "Thinking Face" },
+      { char: "🤐", name: "Zipper-Mouth Face" },
+      { char: "🤨", name: "Face with Raised Eyebrow" },
+      { char: "😐", name: "Neutral Face" },
+      { char: "😑", name: "Expressionless Face" },
+      { char: "😶", name: "Face Without Mouth" },
+      { char: "😏", name: "Smirking Face" },
+      { char: "😒", name: "Unamused Face" },
+      { char: "🙄", name: "Face with Rolling Eyes" },
+      { char: "😬", name: "Grimacing Face" },
+      { char: "🤥", name: "Lying Face" },
+      { char: "😌", name: "Relieved Face" },
+      { char: "😔", name: "Pensive Face" },
+      { char: "😪", name: "Sleepy Face" },
+      { char: "🤤", name: "Drooling Face" },
+      { char: "😴", name: "Sleeping Face" },
+      { char: "😷", name: "Face with Medical Mask" },
+      { char: "🤒", name: "Face with Thermometer" },
+      { char: "🤕", name: "Face with Head-Bandage" },
+      { char: "🤢", name: "Nauseated Face" },
+      { char: "🤮", name: "Face Vomiting" },
+      { char: "🥵", name: "Hot Face" },
+      { char: "🥶", name: "Cold Face" },
+      { char: "🥴", name: "Woozy Face" },
+      { char: "😵", name: "Dizzy Face" },
+      { char: "🤯", name: "Exploding Head" },
+      { char: "🤠", name: "Cowboy Hat Face" },
+      { char: "🥳", name: "Partying Face" },
+      { char: "😎", name: "Sunglasses Face" },
+      { char: "🤓", name: "Nerd Face" },
+      { char: "🧐", name: "Face with Monocle" },
+      { char: "😕", name: "Confused Face" },
+      { char: "😟", name: "Worried Face" },
+      { char: "😮", name: "Face with Open Mouth" },
+      { char: "😲", name: "Astonished Face" },
+      { char: "😳", name: "Flushed Face" },
+      { char: "🥺", name: "Pleading Face" },
+      { char: "😦", name: "Frowning Face" },
+      { char: "😨", name: "Fearful Face" },
+      { char: "😰", name: "Anxious Face with Sweat" },
+      { char: "😥", name: "Sad but Relieved Face" },
+      { char: "😢", name: "Crying Face" },
+      { char: "😭", name: "Loudly Crying Face" },
+      { char: "😱", name: "Face Screaming in Fear" },
+      { char: "😖", name: "Confounded Face" },
+      { char: "😣", name: "Persevering Face" },
+      { char: "😞", name: "Disappointed Face" },
+      { char: "😓", name: "Downcast Face with Sweat" },
+      { char: "😩", name: "Weary Face" },
+      { char: "😫", name: "Tired Face" },
+      { char: "🥱", name: "Yawning Face" },
+      { char: "😤", name: "Face with Steam From Nose" },
+      { char: "😡", name: "Enraged Face" },
+      { char: "😠", name: "Angry Face" },
+      { char: "🤬", name: "Face with Symbols on Mouth" },
+      { char: "😈", name: "Smiling Face with Horns" },
+      { char: "👿", name: "Angry Face with Horns" },
+      { char: "💀", name: "Skull" },
+      { char: "💩", name: "Pile of Poo" },
+      { char: "🤡", name: "Clown Face" },
+      { char: "👻", name: "Ghost" },
+      { char: "👽", name: "Alien" },
+      { char: "🤖", name: "Robot" }
+    ],
+    people: [
+      { char: "👋", name: "Waving Hand" },
+      { char: "🤚", name: "Raised Back of Hand" },
+      { char: "🖐", name: "Hand with Fingers Splayed" },
+      { char: "✋", name: "Raised Hand" },
+      { char: "🖖", name: "Vulcan Salute" },
+      { char: "👌", name: "OK Hand" },
+      { char: "🤏", name: "Pinching Hand" },
+      { char: "✌️", name: "Victory Hand" },
+      { char: "🤞", name: "Crossed Fingers" },
+      { char: "🤟", name: "Love-You Gesture" },
+      { char: "🤘", name: "Sign of the Horns" },
+      { char: "🤙", name: "Call Me Hand" },
+      { char: "👈", name: "Backhand Index Pointing Left" },
+      { char: "👉", name: "Backhand Index Pointing Right" },
+      { char: "👆", name: "Backhand Index Pointing Up" },
+      { char: "👇", name: "Backhand Index Pointing Down" },
+      { char: "☝️", name: "Index Pointing Up" },
+      { char: "👍", name: "Thumbs Up" },
+      { char: "👎", name: "Thumbs Down" },
+      { char: "✊", name: "Raised Fist" },
+      { char: "👊", name: "Oncoming Fist" },
+      { char: "🤛", name: "Left-Facing Fist" },
+      { char: "🤜", name: "Right-Facing Fist" },
+      { char: "👏", name: "Clapping Hands" },
+      { char: "🙌", name: "Raising Hands" },
+      { char: "👐", name: "Open Hands" },
+      { char: "🤲", name: "Palms Up Together" },
+      { char: "🤝", name: "Handshake" },
+      { char: "🙏", name: "Folded Hands" },
+      { char: "✍️", name: "Writing Hand" },
+      { char: "💅", name: "Nail Polish" },
+      { char: "🤳", name: "Selfie" },
+      { char: "💪", name: "Flexed Biceps" },
+      { char: "🧠", name: "Brain" },
+      { char: "👀", name: "Eyes" },
+      { char: "👁️", name: "Eye" },
+      { char: "👅", name: "Tongue" },
+      { char: "👄", name: "Mouth" },
+      { char: "💋", name: "Kiss Mark" },
+      { char: "❤️", name: "Red Heart" },
+      { char: "🧡", name: "Orange Heart" },
+      { char: "💛", name: "Yellow Heart" },
+      { char: "💚", name: "Green Heart" },
+      { char: "💙", name: "Blue Heart" },
+      { char: "💜", name: "Purple Heart" },
+      { char: "🖤", name: "Black Heart" },
+      { char: "🤍", name: "White Heart" },
+      { char: "🤎", name: "Brown Heart" },
+      { char: "💔", name: "Broken Heart" },
+      { char: "💕", name: "Two Hearts" },
+      { char: "💖", name: "Sparkling Heart" },
+      { char: "🔥", name: "Fire" },
+      { char: "✨", name: "Sparkles" },
+      { char: "🌟", name: "Glowing Star" },
+      { char: "⚡", name: "High Voltage" }
+    ],
+    animals: [
+      { char: "🐶", name: "Dog Face" },
+      { char: "🐱", name: "Cat Face" },
+      { char: "🐭", name: "Mouse Face" },
+      { char: "🐹", name: "Hamster Face" },
+      { char: "🐰", name: "Rabbit Face" },
+      { char: "🦊", name: "Fox" },
+      { char: "🐻", name: "Bear" },
+      { char: "🐼", name: "Panda" },
+      { char: "🐨", name: "Koala" },
+      { char: "🐯", name: "Tiger Face" },
+      { char: "🦁", name: "Lion" },
+      { char: "🐮", name: "Cow Face" },
+      { char: "🐷", name: "Pig Face" },
+      { char: "🐸", name: "Frog" },
+      { char: "🐵", name: "Monkey Face" },
+      { char: "🐔", name: "Chicken" },
+      { char: "🐧", name: "Penguin" },
+      { char: "🐦", name: "Bird" },
+      { char: "🐤", name: "Baby Chick" },
+      { char: "🦆", name: "Duck" },
+      { char: "🦅", name: "Eagle" },
+      { char: "🦉", name: "Owl" },
+      { char: "🦇", name: "Bat" },
+      { char: "🐺", name: "Wolf" },
+      { char: "🐴", name: "Horse Face" },
+      { char: "🦄", name: "Unicorn" },
+      { char: "🐝", name: "Honeybee" },
+      { char: "🐛", name: "Bug" },
+      { char: "🦋", name: "Butterfly" },
+      { char: "🐌", name: "Snail" },
+      { char: "🐞", name: "Lady Beetle" },
+      { char: "🐜", name: "Ant" },
+      { char: "🐢", name: "Turtle" },
+      { char: "🐍", name: "Snake" },
+      { char: "🐙", name: "Octopus" },
+      { char: "🐬", name: "Dolphin" },
+      { char: "🐳", name: "Spouting Whale" },
+      { char: "🦈", name: "Shark" },
+      { char: "🐊", name: "Crocodile" },
+      { char: "🐅", name: "Tiger" },
+      { char: "🐆", name: "Leopard" },
+      { char: "🦓", name: "Zebra" },
+      { char: "🦍", name: "Gorilla" },
+      { char: "🐘", name: "Elephant" },
+      { char: "🦛", name: "Hippopotamus" },
+      { char: "🦏", name: "Rhinoceros" },
+      { char: "🐪", name: "Camel" },
+      { char: "🦒", name: "Giraffe" },
+      { char: "🦘", name: "Kangaroo" },
+      { char: "🌲", name: "Evergreen Tree" },
+      { char: "🌳", name: "Deciduous Tree" },
+      { char: "🌴", name: "Palm Tree" },
+      { char: "🌵", name: "Cactus" },
+      { char: "🌷", name: "Tulip" },
+      { char: "🌸", name: "Cherry Blossom" },
+      { char: "🌹", name: "Rose" },
+      { char: "🌺", name: "Hibiscus" },
+      { char: "🌻", name: "Sunflower" },
+      { char: "🌼", name: "Blossom" },
+      { char: "🍀", name: "Four Leaf Clover" }
+    ],
+    food: [
+      { char: "🍏", name: "Green Apple" },
+      { char: "🍎", name: "Red Apple" },
+      { char: "🍐", name: "Pear" },
+      { char: "🍊", name: "Tangerine" },
+      { char: "🍋", name: "Lemon" },
+      { char: "🍌", name: "Banana" },
+      { char: "🍉", name: "Watermelon" },
+      { char: "🍇", name: "Grapes" },
+      { char: "🍓", name: "Strawberry" },
+      { char: "🫐", name: "Blueberries" },
+      { char: "🍒", name: "Cherries" },
+      { char: "🍑", name: "Peach" },
+      { char: "🥭", name: "Mango" },
+      { char: "🍍", name: "Pineapple" },
+      { char: "🥥", name: "Coconut" },
+      { char: "🥝", name: "Kiwi Fruit" },
+      { char: "🍅", name: "Tomato" },
+      { char: "🥑", name: "Avocado" },
+      { char: "🥦", name: "Broccoli" },
+      { char: "🌽", name: "Ear of Corn" },
+      { char: "🥕", name: "Carrot" },
+      { char: "🥐", name: "Croissant" },
+      { char: "🍞", name: "Bread" },
+      { char: "🥨", name: "Pretzel" },
+      { char: "🧀", name: "Cheese Wedge" },
+      { char: "🥚", name: "Egg" },
+      { char: "🍳", name: "Cooking" },
+      { char: "🥞", name: "Pancakes" },
+      { char: "🥓", name: "Bacon" },
+      { char: "🥩", name: "Cut of Meat" },
+      { char: "🍗", name: "Poultry Leg" },
+      { char: "🍔", name: "Hamburger" },
+      { char: "🍟", name: "French Fries" },
+      { char: "🍕", name: "Pizza" },
+      { char: "🥪", name: "Sandwich" },
+      { char: "🌮", name: "Taco" },
+      { char: "🌯", name: "Burrito" },
+      { char: "🥗", name: "Green Salad" },
+      { char: "🍝", name: "Spaghetti" },
+      { char: "🍜", name: "Steaming Bowl" },
+      { char: "🍲", name: "Pot of Food" },
+      { char: "🍛", name: "Curry Rice" },
+      { char: "🍣", name: "Sushi" },
+      { char: "🍱", name: "Bento Box" },
+      { char: "🥟", name: "Dumpling" },
+      { char: "🍤", name: "Fried Shrimp" },
+      { char: "🍦", name: "Soft Ice Cream" },
+      { char: "🍩", name: "Doughnut" },
+      { char: "🍪", name: "Cookie" },
+      { char: "🎂", name: "Birthday Cake" },
+      { char: "🍰", name: "Shortcake" },
+      { char: "🧁", name: "Cupcake" },
+      { char: "🍫", name: "Chocolate Bar" },
+      { char: "🍿", name: "Popcorn" },
+      { char: "☕", name: "Hot Beverage" },
+      { char: "🍵", name: "Teacup" },
+      { char: "🧃", name: "Beverage Box" },
+      { char: "🥤", name: "Cup with Straw" },
+      { char: "🧋", name: "Bubble Tea" },
+      { char: "🍺", name: "Beer Mug" },
+      { char: "🍻", name: "Clinking Beer Mugs" },
+      { char: "🥂", name: "Clinking Glasses" },
+      { char: "🍷", name: "Wine Glass" }
+    ],
+    activities: [
+      { char: "⚽", name: "Soccer Ball" },
+      { char: "🏀", name: "Basketball" },
+      { char: "🏈", name: "American Football" },
+      { char: "⚾", name: "Baseball" },
+      { char: "🎾", name: "Tennis" },
+      { char: "🏐", name: "Volleyball" },
+      { char: "🏉", name: "Rugby Football" },
+      { char: "🥏", name: "Flying Disc" },
+      { char: "🎱", name: "Pool 8 Ball" },
+      { char: "🏓", name: "Ping Pong" },
+      { char: "🏸", name: "Badminton" },
+      { char: "🏒", name: "Ice Hockey" },
+      { char: "🏏", name: "Cricket" },
+      { char: "⛳", name: "Golf" },
+      { char: "🏹", name: "Bow and Arrow" },
+      { char: "🎣", name: "Fishing" },
+      { char: "🥊", name: "Boxing Glove" },
+      { char: "🥋", name: "Martial Arts" },
+      { char: "🛹", name: "Skateboard" },
+      { char: "🛼", name: "Roller Skate" },
+      { char: "🎿", name: "Skis" },
+      { char: "🏂", name: "Snowboarder" },
+      { char: "🏋️", name: "Weight Lifting" },
+      { char: "🏄", name: "Surfing" },
+      { char: "🏊", name: "Swimming" },
+      { char: "🚴", name: "Biking" },
+      { char: "🏆", name: "Trophy" },
+      { char: "🥇", name: "1st Place Medal" },
+      { char: "🥈", name: "2nd Place Medal" },
+      { char: "🥉", name: "3rd Place Medal" },
+      { char: "🏅", name: "Sports Medal" },
+      { char: "🎟️", name: "Admission Tickets" },
+      { char: "🎪", name: "Circus Tent" },
+      { char: "🎭", name: "Performing Arts" },
+      { char: "🎨", name: "Artist Palette" },
+      { char: "🎬", name: "Clapper Board" },
+      { char: "🎤", name: "Microphone" },
+      { char: "🎧", name: "Headphone" },
+      { char: "🎼", name: "Musical Score" },
+      { char: "🎹", name: "Musical Keyboard" },
+      { char: "🥁", name: "Drum" },
+      { char: "🎷", name: "Saxophone" },
+      { char: "🎸", name: "Guitar" },
+      { char: "🎲", name: "Game Die" },
+      { char: "🎯", name: "Bullseye" },
+      { char: "🎳", name: "Bowling" },
+      { char: "🎮", name: "Video Game" },
+      { char: "🎰", name: "Slot Machine" },
+      { char: "🧩", name: "Puzzle Piece" }
+    ],
+    objects: [
+      { char: "💡", name: "Light Bulb" },
+      { char: "🔦", name: "Flashlight" },
+      { char: "🕯️", name: "Candle" },
+      { char: "📱", name: "Mobile Phone" },
+      { char: "💻", name: "Laptop" },
+      { char: "🖥️", name: "Desktop Computer" },
+      { char: "🖨️", name: "Printer" },
+      { char: "⌨️", name: "Keyboard" },
+      { char: "🖱️", name: "Mouse" },
+      { char: "📷", name: "Camera" },
+      { char: "🎥", name: "Movie Camera" },
+      { char: "📺", name: "Television" },
+      { char: "📻", name: "Radio" },
+      { char: "🔍", name: "Magnifying Glass Left" },
+      { char: "🔎", name: "Magnifying Glass Right" },
+      { char: "🔮", name: "Crystal Ball" },
+      { char: "💎", name: "Gem Stone" },
+      { char: "⏳", name: "Hourglass Done" },
+      { char: "⌛", name: "Hourglass Running" },
+      { char: "⏰", name: "Alarm Clock" },
+      { char: "⏱️", name: "Stopwatch" },
+      { char: "🎁", name: "Wrapped Gift" },
+      { char: "🎈", name: "Balloon" },
+      { char: "🎉", name: "Party Popper" },
+      { char: "🎊", name: "Confetti Ball" },
+      { char: "✉️", name: "Envelope" },
+      { char: "📦", name: "Package" },
+      { char: "📝", name: "Memo" },
+      { char: "📁", name: "File Folder" },
+      { char: "📂", name: "Open File Folder" },
+      { char: "📅", name: "Calendar" },
+      { char: "📌", name: "Pushpin" },
+      { char: "📍", name: "Round Pushpin" },
+      { char: "📎", name: "Paperclip" },
+      { char: "🔒", name: "Locked" },
+      { char: "🔓", name: "Unlocked" },
+      { char: "🔑", name: "Key" },
+      { char: "🗝️", name: "Old Key" },
+      { char: "🔨", name: "Hammer" },
+      { char: "🔧", name: "Wrench" },
+      { char: "⚙️", name: "Gear" },
+      { char: "🧱", name: "Brick" },
+      { char: "💣", name: "Bomb" },
+      { char: "🛡️", name: "Shield" },
+      { char: "🚗", name: "Car" },
+      { char: "🚕", name: "Taxi" },
+      { char: "🚙", name: "SUV" },
+      { char: "🚌", name: "Bus" },
+      { char: "🏎️", name: "Racing Car" },
+      { char: "🚓", name: "Police Car" },
+      { char: "🚑", name: "Ambulance" },
+      { char: "🚒", name: "Fire Engine" },
+      { char: "🏍️", name: "Motorcycle" },
+      { char: "🚲", name: "Bicycle" },
+      { char: "🚀", name: "Rocket" },
+      { char: "🛸", name: "Flying Saucer" },
+      { char: "🚁", name: "Helicopter" },
+      { char: "⛵", name: "Sailboat" },
+      { char: "🚤", name: "Speedboat" },
+      { char: "🛳️", name: "Passenger Ship" },
+      { char: "⚓", name: "Anchor" }
+    ],
+    symbols: [
+      { char: "❤️", name: "Red Heart" },
+      { char: "🧡", name: "Orange Heart" },
+      { char: "💛", name: "Yellow Heart" },
+      { char: "💚", name: "Green Heart" },
+      { char: "💙", name: "Blue Heart" },
+      { char: "💜", name: "Purple Heart" },
+      { char: "🖤", name: "Black Heart" },
+      { char: "🤍", name: "White Heart" },
+      { char: "🤎", name: "Brown Heart" },
+      { char: "💔", name: "Broken Heart" },
+      { char: "❣️", name: "Heart Exclamation" },
+      { char: "💕", name: "Two Hearts" },
+      { char: "💞", name: "Revolving Hearts" },
+      { char: "💓", name: "Beating Heart" },
+      { char: "💗", name: "Growing Heart" },
+      { char: "💖", name: "Sparkling Heart" },
+      { char: "💘", name: "Heart with Arrow" },
+      { char: "💝", name: "Heart with Ribbon" },
+      { char: "⚠️", name: "Warning" },
+      { char: "🛑", name: "Stop Sign" },
+      { char: "⛔", name: "No Entry" },
+      { char: "🚫", name: "Prohibited" },
+      { char: "💯", name: "Hundred Points" },
+      { char: "💢", name: "Anger Symbol" },
+      { char: "♨️", name: "Hot Springs" },
+      { char: "❗", name: "Exclamation Mark" },
+      { char: "❓", name: "Question Mark" },
+      { char: "‼️", name: "Double Exclamation Mark" },
+      { char: "⁉️", name: "Exclamation Question Mark" },
+      { char: "✅", name: "Check Mark Button" },
+      { char: "❇️", name: "Sparkle" },
+      { char: "✳️", name: "Eight-Spoked Asterisk" },
+      { char: "❎", name: "Cross Mark Button" },
+      { char: "🌐", name: "Globe with Meridians" },
+      { char: "💤", name: "Zzz" },
+      { char: "🏧", name: "ATM Sign" },
+      { char: "🚾", name: "Water Closet" },
+      { char: "♿", name: "Wheelchair Symbol" },
+      { char: "🅿️", name: "P Button" },
+      { char: "📶", name: "Antenna Bars" },
+      { char: "🆖", name: "NG Button" },
+      { char: "🆗", name: "OK Button" },
+      { char: "🆙", name: "UP! Button" },
+      { char: "🆒", name: "COOL Button" },
+      { char: "🆕", name: "NEW Button" },
+      { char: "🆓", name: "FREE Button" },
+      { char: "0️⃣", name: "Keycap 0" },
+      { char: "1️⃣", name: "Keycap 1" },
+      { char: "2️⃣", name: "Keycap 2" },
+      { char: "3️⃣", name: "Keycap 3" },
+      { char: "4️⃣", name: "Keycap 4" },
+      { char: "5️⃣", name: "Keycap 5" },
+      { char: "6️⃣", name: "Keycap 6" },
+      { char: "7️⃣", name: "Keycap 7" },
+      { char: "8️⃣", name: "Keycap 8" },
+      { char: "9️⃣", name: "Keycap 9" },
+      { char: "🔟", name: "Keycap 10" },
+      { char: "▶️", name: "Play Button" },
+      { char: "⏸️", name: "Pause Button" },
+      { char: "⏹️", name: "Stop Button" },
+      { char: "🔁", name: "Repeat Button" },
+      { char: "🔀", name: "Shuffle Tracks Button" },
+      { char: "🎵", name: "Musical Note" },
+      { char: "🎶", name: "Musical Notes" },
+      { char: "➕", name: "Plus" },
+      { char: "➖", name: "Minus" },
+      { char: "➗", name: "Divide" },
+      { char: "✖️", name: "Multiply" },
+      { char: "♾️", name: "Infinity" },
+      { char: "💲", name: "Heavy Dollar Sign" },
+      { char: "🏁", name: "Chequered Flag" },
+      { char: "🚩", name: "Triangular Flag" },
+      { char: "🏳️‍🌈", name: "Rainbow Flag" }
+    ]
+  },
+
+  activeEmojiCategory: "smileys",
+
+  setupEmojiPicker() {
+    this.renderEmojiCategory(this.activeEmojiCategory);
+
+    // Tab buttons
+    document.querySelectorAll(".emoji-tab-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".emoji-tab-btn").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        this.activeEmojiCategory = btn.dataset.category;
+        if (this.elements.emojiSearchInput.value.trim()) {
+          this.elements.emojiSearchInput.value = "";
+          this.elements.emojiSearchClear.classList.add("hidden");
+        }
+        this.renderEmojiCategory(this.activeEmojiCategory);
+      });
+    });
+
+    // Search input
+    if (this.elements.emojiSearchInput) {
+      this.elements.emojiSearchInput.addEventListener("input", (e) => {
+        const q = e.target.value.trim().toLowerCase();
+        if (q) {
+          this.elements.emojiSearchClear.classList.remove("hidden");
+          this.searchEmojis(q);
+        } else {
+          this.elements.emojiSearchClear.classList.add("hidden");
+          this.renderEmojiCategory(this.activeEmojiCategory);
+        }
+      });
+    }
+
+    // Clear search
+    if (this.elements.emojiSearchClear) {
+      this.elements.emojiSearchClear.addEventListener("click", () => {
+        this.elements.emojiSearchInput.value = "";
+        this.elements.emojiSearchClear.classList.add("hidden");
+        this.renderEmojiCategory(this.activeEmojiCategory);
+        this.elements.emojiSearchInput.focus();
+      });
+    }
+  },
+
+  toggleEmojiPicker() {
+    const isHidden = this.elements.emojiPopover.classList.contains("hidden");
+    if (isHidden) {
+      this.elements.emojiPopover.classList.remove("hidden");
+      if (this.elements.emojiSearchInput) {
+        this.elements.emojiSearchInput.focus();
+      }
+    } else {
+      this.elements.emojiPopover.classList.add("hidden");
+    }
+  },
+
+  renderEmojiCategory(catKey) {
+    if (!this.elements.emojiPickerBody) return;
+    const emojis = this.EMOJI_DATA[catKey] || [];
+    this.elements.emojiPickerBody.innerHTML = `
+      <div class="emoji-category-title">${catKey.toUpperCase()} (${emojis.length})</div>
+      <div class="emoji-grid">
+        ${emojis.map(e => `
+          <div class="emoji-grid-item" data-char="${e.char}" data-name="${e.name}" title="${e.name}">
+            ${e.char}
+          </div>
+        `).join('')}
+      </div>
+    `;
+    this.attachEmojiClickHandlers();
+  },
+
+  searchEmojis(query) {
+    if (!this.elements.emojiPickerBody) return;
+    const results = [];
+    Object.values(this.EMOJI_DATA).forEach(list => {
+      list.forEach(e => {
+        if (e.name.toLowerCase().includes(query)) {
+          results.push(e);
+        }
+      });
+    });
+
+    if (results.length === 0) {
+      this.elements.emojiPickerBody.innerHTML = `
+        <div style="text-align: center; color: var(--text-muted); padding: 30px; font-size: 13px;">
+          No emojis found for "${query}"
+        </div>
+      `;
+      return;
+    }
+
+    this.elements.emojiPickerBody.innerHTML = `
+      <div class="emoji-category-title">Matching Emojis (${results.length})</div>
+      <div class="emoji-grid">
+        ${results.map(e => `
+          <div class="emoji-grid-item" data-char="${e.char}" data-name="${e.name}" title="${e.name}">
+            ${e.char}
+          </div>
+        `).join('')}
+      </div>
+    `;
+    this.attachEmojiClickHandlers();
+  },
+
+  attachEmojiClickHandlers() {
+    this.elements.emojiPickerBody.querySelectorAll(".emoji-grid-item").forEach(item => {
+      item.addEventListener("click", () => {
+        const char = item.dataset.char;
+        this.insertEmoji(char);
+      });
+
+      item.addEventListener("mouseenter", () => {
+        if (this.elements.emojiPreviewChar) {
+          this.elements.emojiPreviewChar.textContent = item.dataset.char;
+        }
+        if (this.elements.emojiPreviewName) {
+          this.elements.emojiPreviewName.textContent = item.dataset.name;
+        }
+      });
+    });
+  },
+
+  insertEmoji(char) {
+    const input = this.elements.chatInput;
+    const start = input.selectionStart || input.value.length;
+    const end = input.selectionEnd || input.value.length;
+    const text = input.value;
+    input.value = text.substring(0, start) + char + text.substring(end);
+    input.selectionStart = input.selectionEnd = start + char.length;
+    input.focus();
+    input.dispatchEvent(new Event("input"));
   },
 
   playNotificationSound() {

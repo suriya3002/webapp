@@ -190,15 +190,25 @@ async def websocket_endpoint(
                 })
 
             elif action == "send_direct_message":
-                recipient_id = data.get("recipient_id")
+                try:
+                    recipient_id = int(data.get("recipient_id"))
+                except (ValueError, TypeError):
+                    continue
+
                 content = (data.get("content") or "").strip()
-                if not content or not recipient_id:
+                if not content or not recipient_id or recipient_id == user_id:
                     continue
 
                 async with AsyncSessionLocal() as db:
+                    # Verify recipient exists for privacy protection
+                    recip_res = await db.execute(select(User).where(User.id == recipient_id))
+                    if not recip_res.scalar_one_or_none():
+                        continue
+
                     msg = Message(
                         sender_id=user_id,
                         recipient_id=recipient_id,
+                        room_id=None,
                         content=content
                     )
                     db.add(msg)
@@ -211,6 +221,7 @@ async def websocket_endpoint(
                     full_msg = res.scalar_one()
                     msg_dict = full_msg.to_dict()
 
+                # Deliver ONLY to recipient and sender for 1-to-1 privacy
                 await manager.send_direct_message(
                     sender_id=user_id,
                     recipient_id=recipient_id,
@@ -221,10 +232,22 @@ async def websocket_endpoint(
                 )
 
             elif action == "typing":
-                # Handle typing indicator
+                # Handle typing indicator with privacy separation
                 is_typing = bool(data.get("is_typing", True))
                 target_room_id = data.get("room_id")
                 target_recipient_id = data.get("recipient_id")
+
+                try:
+                    if target_recipient_id is not None:
+                        target_recipient_id = int(target_recipient_id)
+                except (ValueError, TypeError):
+                    target_recipient_id = None
+
+                try:
+                    if target_room_id is not None:
+                        target_room_id = int(target_room_id)
+                except (ValueError, TypeError):
+                    target_room_id = None
 
                 typing_payload = {
                     "type": "user_typing",
@@ -238,7 +261,8 @@ async def websocket_endpoint(
 
                 if target_room_id:
                     await manager.broadcast(typing_payload, exclude_user_id=user_id)
-                elif target_recipient_id:
+                elif target_recipient_id and target_recipient_id != user_id:
+                    # In 1-on-1 private chat, deliver strictly to the peer user
                     await manager.send_to_user(target_recipient_id, typing_payload)
 
     except WebSocketDisconnect:

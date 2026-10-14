@@ -142,6 +142,9 @@ class ChatWebSocketClient {
       case "new_room_created":
         this.emit("room:created", data.room);
         break;
+      case "room_deleted":
+        this.emit("room:deleted", data);
+        break;
       case "pong":
         break;
       default:
