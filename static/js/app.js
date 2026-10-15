@@ -302,6 +302,7 @@ const App = {
           this.cancelReply();
         }
         this.closeEmojiPicker();
+        this.closeContextMenu();
         document.querySelectorAll(".whatsapp-msg-toolbar.mobile-active").forEach(t => t.classList.remove("mobile-active"));
       }
     });
@@ -317,6 +318,9 @@ const App = {
       }
       if (!e.target.closest(".whatsapp-msg-toolbar") && !e.target.closest(".msg-mobile-trigger")) {
         document.querySelectorAll(".whatsapp-msg-toolbar.mobile-active").forEach(t => t.classList.remove("mobile-active"));
+      }
+      if (!e.target.closest(".whatsapp-context-menu") && !e.target.closest(".bubble-dropdown-btn")) {
+        this.closeContextMenu();
       }
     });
 
@@ -937,6 +941,9 @@ const App = {
             ${quotedReplyHtml}
             <div class="message-text">${formattedContent}</div>
             ${reactionBadgesHtml}
+            <button type="button" class="bubble-dropdown-btn" title="Message options">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
           </div>
           <button type="button" class="msg-mobile-trigger" title="Message actions">⋮</button>
           ${toolbarHtml}
@@ -944,16 +951,48 @@ const App = {
       </div>
     `;
 
-    // Copy action
-    row.querySelector(".copy-btn")?.addEventListener("click", () => {
+    // Copy action from toolbar
+    row.querySelector(".copy-btn")?.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
       navigator.clipboard.writeText(msg.content);
       this.showToast("Copied to clipboard", "success");
     });
 
-    // Reply action (WhatsApp style)
-    row.querySelector(".reply-btn")?.addEventListener("click", () => {
+    // Reply action from toolbar (WhatsApp style)
+    row.querySelector(".reply-btn")?.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
       this.startReplyingToMessage(msg);
     });
+
+    // Double-click on message bubble to reply (WhatsApp Web shortcut)
+    const bubbleEl = row.querySelector(".message-bubble");
+    if (bubbleEl) {
+      bubbleEl.addEventListener("dblclick", (e) => {
+        if (e.target.closest(".quoted-reply-card") || e.target.closest(".reaction-pill") || e.target.closest(".bubble-dropdown-btn")) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this.startReplyingToMessage(msg);
+      });
+
+      // Right-click (contextmenu) on message to open WhatsApp context menu
+      bubbleEl.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.showWhatsAppContextMenu(e, msg, row);
+      });
+
+      // Chevron dropdown button click
+      const dropdownBtn = bubbleEl.querySelector(".bubble-dropdown-btn");
+      if (dropdownBtn) {
+        dropdownBtn.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          this.showWhatsAppContextMenu(e, msg, row, dropdownBtn);
+        });
+      }
+    }
 
     // Quoted reply click -> smoothly navigate to quoted message
     const quoteEl = row.querySelector(".quoted-reply-card");
@@ -2311,7 +2350,120 @@ const App = {
     });
   },
 
+  closeContextMenu() {
+    const existing = document.querySelector(".whatsapp-context-menu");
+    if (existing) existing.remove();
+    document.querySelectorAll(".bubble-dropdown-btn.active").forEach(b => b.classList.remove("active"));
+  },
+
+  showWhatsAppContextMenu(e, msg, row, anchorEl = null) {
+    this.closeContextMenu();
+    if (anchorEl) anchorEl.classList.add("active");
+
+    const isMe = msg.sender_id === this.state.currentUser?.id;
+    const menu = document.createElement("div");
+    menu.className = "whatsapp-context-menu";
+
+    menu.innerHTML = `
+      <button type="button" class="ctx-menu-item ctx-reply">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>
+        <span>Reply</span>
+      </button>
+      <button type="button" class="ctx-menu-item ctx-react">
+        <span class="ctx-icon">😊</span>
+        <span>React</span>
+      </button>
+      <button type="button" class="ctx-menu-item ctx-copy">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        <span>Copy Text</span>
+      </button>
+      ${isMe ? `
+        <div class="ctx-menu-divider"></div>
+        <button type="button" class="ctx-menu-item ctx-edit">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
+          <span>Edit Message</span>
+        </button>
+        <button type="button" class="ctx-menu-item ctx-delete">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          <span>Delete Message</span>
+        </button>
+      ` : ''}
+    `;
+
+    document.body.appendChild(menu);
+
+    // Compute menu coordinates
+    let x = e ? e.clientX : 0;
+    let y = e ? e.clientY : 0;
+
+    if (anchorEl) {
+      const rect = anchorEl.getBoundingClientRect();
+      x = rect.left - 130;
+      y = rect.bottom + 6;
+    }
+
+    const menuRect = menu.getBoundingClientRect();
+    const winWidth = window.innerWidth;
+    const winHeight = window.innerHeight;
+
+    if (x + menuRect.width > winWidth - 10) {
+      x = winWidth - menuRect.width - 10;
+    }
+    if (x < 10) x = 10;
+
+    if (y + menuRect.height > winHeight - 10) {
+      y = y - menuRect.height - 12;
+    }
+    if (y < 10) y = 10;
+
+    menu.style.left = `${x}px`;
+    menu.style.top = `${y}px`;
+
+    // Action listeners
+    menu.querySelector(".ctx-reply")?.addEventListener("click", (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      this.closeContextMenu();
+      this.startReplyingToMessage(msg);
+    });
+
+    menu.querySelector(".ctx-react")?.addEventListener("click", (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      this.closeContextMenu();
+      this.openEmojiPickerForReaction(msg.id);
+    });
+
+    menu.querySelector(".ctx-copy")?.addEventListener("click", (evt) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      this.closeContextMenu();
+      navigator.clipboard.writeText(msg.content);
+      this.showToast("Copied to clipboard", "success");
+    });
+
+    if (isMe) {
+      menu.querySelector(".ctx-edit")?.addEventListener("click", (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this.closeContextMenu();
+        this.startEditingMessage(msg, row);
+      });
+
+      menu.querySelector(".ctx-delete")?.addEventListener("click", (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this.closeContextMenu();
+        this.confirmAndDeleteMessage(msg);
+      });
+    }
+  },
+
   startReplyingToMessage(msg) {
+    if (!msg) return;
+    this.closeContextMenu();
+    document.querySelectorAll(".whatsapp-msg-toolbar.mobile-active").forEach(t => t.classList.remove("mobile-active"));
+
     const isMe = msg.sender_id === this.state.currentUser?.id;
     const authorName = isMe ? "You" : (msg.sender_display_name || "User");
     this.state.replyingTo = {
@@ -2327,14 +2479,30 @@ const App = {
     }
 
     if (this.elements.chatInput) {
+      this.elements.chatInput.placeholder = `Replying to ${authorName}... (Esc to cancel)`;
       this.elements.chatInput.focus();
     }
+
+    // Scroll chat area to bottom if needed
+    this.scrollToBottom();
+
+    // Pulse highlight message being replied to
+    const targetRow = this.elements.messagesContainer?.querySelector(`.message-row[data-msg-id="${msg.id}"]`);
+    if (targetRow) {
+      targetRow.classList.add("message-highlighted");
+      setTimeout(() => targetRow.classList.remove("message-highlighted"), 1400);
+    }
+
+    this.showToast(`Replying to ${authorName}`, "info");
   },
 
   cancelReply() {
     this.state.replyingTo = null;
     if (this.elements.replyPreviewBar) {
       this.elements.replyPreviewBar.classList.add("hidden");
+    }
+    if (this.elements.chatInput) {
+      this.elements.chatInput.placeholder = "Type a message... (Enter to send, Shift+Enter for new line)";
     }
   },
 

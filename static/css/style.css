@@ -1104,6 +1104,17 @@ h1, h2, h3, h4, h5, h6 {
   white-space: nowrap;
 }
 
+/* Invisible hover bridge: bridges the 6px gap so hover is NEVER lost while moving cursor */
+.whatsapp-msg-toolbar::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: -8px;
+  right: -8px;
+  height: 16px;
+  pointer-events: auto;
+}
+
 .message-row.incoming .whatsapp-msg-toolbar {
   left: 0;
 }
@@ -1117,17 +1128,21 @@ h1, h2, h3, h4, h5, h6 {
   margin-bottom: 6px;
 }
 
-/* Hover on desktop shows toolbar smoothly */
+/* Hover on desktop shows toolbar smoothly and stays rock-solid */
+.message-row:hover .whatsapp-msg-toolbar,
+.message-content-wrap:hover .whatsapp-msg-toolbar,
 .message-bubble-container:hover .whatsapp-msg-toolbar,
+.whatsapp-msg-toolbar:hover,
 .whatsapp-msg-toolbar.mobile-active {
-  opacity: 1;
-  pointer-events: auto;
-  transform: translateY(0);
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  transform: translateY(0) !important;
 }
 
 /* When message is being edited, hide action toolbar to eliminate any overlap */
 .message-row.is-editing .whatsapp-msg-toolbar,
-.message-row.is-editing .msg-mobile-trigger {
+.message-row.is-editing .msg-mobile-trigger,
+.message-row.is-editing .bubble-dropdown-btn {
   display: none !important;
 }
 
@@ -1208,6 +1223,7 @@ h1, h2, h3, h4, h5, h6 {
   fill: none;
   display: block;
   flex-shrink: 0;
+  pointer-events: none;
 }
 
 .msg-tool-btn:hover {
@@ -1234,6 +1250,135 @@ h1, h2, h3, h4, h5, h6 {
 .msg-tool-btn.copy-btn:hover {
   background: rgba(255, 255, 255, 0.18);
   color: #fff;
+}
+
+/* WhatsApp Message Dropdown Trigger Button (⌵) on the bubble */
+.bubble-dropdown-btn {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(15, 23, 42, 0.75);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  z-index: 15;
+  padding: 0;
+}
+
+.bubble-dropdown-btn svg {
+  pointer-events: none;
+  stroke: currentColor;
+}
+
+.message-row:hover .bubble-dropdown-btn,
+.message-bubble:hover .bubble-dropdown-btn,
+.bubble-dropdown-btn.active {
+  opacity: 1;
+}
+
+.bubble-dropdown-btn:hover {
+  background: rgba(99, 102, 241, 0.9);
+  color: #fff;
+  transform: scale(1.12);
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.5);
+}
+
+/* WhatsApp Floating Context Menu */
+.whatsapp-context-menu {
+  position: fixed;
+  background: rgba(17, 24, 39, 0.98);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: var(--radius-md);
+  padding: 6px;
+  min-width: 175px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.65), 0 2px 8px rgba(0, 0, 0, 0.4);
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  animation: ctxMenuSlideIn 0.14s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes ctxMenuSlideIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.ctx-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-main);
+  font-size: 13.5px;
+  font-family: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.12s ease;
+}
+
+.ctx-menu-item svg {
+  width: 15px;
+  height: 15px;
+  stroke: currentColor;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
+.ctx-menu-item .ctx-icon {
+  font-size: 14px;
+  width: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.ctx-menu-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.ctx-menu-item.ctx-reply:hover {
+  background: rgba(16, 185, 129, 0.18);
+  color: #6ee7b7;
+}
+
+.ctx-menu-item.ctx-edit:hover {
+  background: rgba(99, 102, 241, 0.2);
+  color: #a5b4fc;
+}
+
+.ctx-menu-item.ctx-delete:hover {
+  background: rgba(239, 68, 68, 0.2);
+  color: #f87171;
+}
+
+.ctx-menu-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.1);
+  margin: 4px 6px;
 }
 
 /* Mobile Options Trigger (⋮) */
@@ -2588,6 +2733,14 @@ h1, h2, h3, h4, h5, h6 {
   /* Touch Trigger for Mobile Action Toolbar */
   .msg-mobile-trigger {
     display: flex !important;
+  }
+
+  .bubble-dropdown-btn {
+    opacity: 0.92 !important;
+    width: 24px;
+    height: 24px;
+    top: 4px;
+    right: 4px;
   }
 
   /* Floating Toolbar on Phone: full-width / fits screen nicely */
