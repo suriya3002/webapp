@@ -49,9 +49,13 @@ class MessageCreate(BaseModel):
     content: str = Field(..., min_length=1, max_length=5000)
     room_id: Optional[int] = None
     recipient_id: Optional[int] = None
+    reply_to_id: Optional[int] = None
 
 class MessageUpdate(BaseModel):
     content: str = Field(..., min_length=1, max_length=5000)
+
+class ReactionToggleRequest(BaseModel):
+    emoji: str = Field(..., min_length=1, max_length=32)
 
 class MessageResponse(BaseModel):
     id: int
@@ -66,8 +70,12 @@ class MessageResponse(BaseModel):
     updated_at: Optional[str] = None
     is_read: bool = False
     is_edited: Optional[bool] = False
+    reply_to_id: Optional[int] = None
+    reply_to: Optional[dict] = None
+    reactions: Optional[List[dict]] = []
 
 class OnlineStatusEvent(BaseModel):
     user_id: int
     username: str
     is_online: bool
+

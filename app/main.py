@@ -163,8 +163,15 @@ async def websocket_endpoint(
                 manager.set_current_room(websocket, room_id)
 
             elif action == "send_room_message":
+                from app.models import MessageReaction
                 room_id = data.get("room_id")
                 content = (data.get("content") or "").strip()
+                reply_to_id = data.get("reply_to_id")
+                try:
+                    reply_to_id = int(reply_to_id) if reply_to_id is not None else None
+                except (ValueError, TypeError):
+                    reply_to_id = None
+
                 if not content or not room_id:
                     continue
 
@@ -172,14 +179,21 @@ async def websocket_endpoint(
                     msg = Message(
                         sender_id=user_id,
                         room_id=room_id,
-                        content=content
+                        content=content,
+                        reply_to_id=reply_to_id
                     )
                     db.add(msg)
                     await db.commit()
                     await db.refresh(msg)
 
                     res = await db.execute(
-                        select(Message).options(selectinload(Message.sender)).where(Message.id == msg.id)
+                        select(Message)
+                        .options(
+                            selectinload(Message.sender),
+                            selectinload(Message.reply_to).selectinload(Message.sender),
+                            selectinload(Message.reactions).selectinload(MessageReaction.user)
+                        )
+                        .where(Message.id == msg.id)
                     )
                     full_msg = res.scalar_one()
                     msg_dict = full_msg.to_dict()
@@ -190,12 +204,19 @@ async def websocket_endpoint(
                 })
 
             elif action == "send_direct_message":
+                from app.models import MessageReaction
                 try:
                     recipient_id = int(data.get("recipient_id"))
                 except (ValueError, TypeError):
                     continue
 
                 content = (data.get("content") or "").strip()
+                reply_to_id = data.get("reply_to_id")
+                try:
+                    reply_to_id = int(reply_to_id) if reply_to_id is not None else None
+                except (ValueError, TypeError):
+                    reply_to_id = None
+
                 if not content or not recipient_id or recipient_id == user_id:
                     continue
 
@@ -209,14 +230,21 @@ async def websocket_endpoint(
                         sender_id=user_id,
                         recipient_id=recipient_id,
                         room_id=None,
-                        content=content
+                        content=content,
+                        reply_to_id=reply_to_id
                     )
                     db.add(msg)
                     await db.commit()
                     await db.refresh(msg)
 
                     res = await db.execute(
-                        select(Message).options(selectinload(Message.sender)).where(Message.id == msg.id)
+                        select(Message)
+                        .options(
+                            selectinload(Message.sender),
+                            selectinload(Message.reply_to).selectinload(Message.sender),
+                            selectinload(Message.reactions).selectinload(MessageReaction.user)
+                        )
+                        .where(Message.id == msg.id)
                     )
                     full_msg = res.scalar_one()
                     msg_dict = full_msg.to_dict()
@@ -230,6 +258,85 @@ async def websocket_endpoint(
                         "message": msg_dict
                     }
                 )
+
+            elif action == "react_message":
+                from app.models import MessageReaction
+                try:
+                    msg_id = int(data.get("message_id"))
+                    emoji = (data.get("emoji") or "").strip()
+                except (ValueError, TypeError):
+                    continue
+
+                if not msg_id or not emoji:
+                    continue
+
+                async with AsyncSessionLocal() as db:
+                    res = await db.execute(select(Message).where(Message.id == msg_id))
+                    target_msg = res.scalar_one_or_none()
+                    if not target_msg:
+                        continue
+
+                    # Check existing reaction
+                    ex_res = await db.execute(
+                        select(MessageReaction).where(
+                            MessageReaction.message_id == msg_id,
+                            MessageReaction.user_id == user_id,
+                            MessageReaction.emoji == emoji
+                        )
+                    )
+                    existing_reaction = ex_res.scalar_one_or_none()
+                    if existing_reaction:
+                        await db.delete(existing_reaction)
+                    else:
+                        new_reaction = MessageReaction(
+                            message_id=msg_id,
+                            user_id=user_id,
+                            emoji=emoji
+                        )
+                        db.add(new_reaction)
+                    await db.commit()
+
+                    # Fetch fresh reactions directly for this message
+                    rx_res = await db.execute(
+                        select(MessageReaction)
+                        .options(selectinload(MessageReaction.user))
+                        .where(MessageReaction.message_id == msg_id)
+                    )
+                    all_reactions = rx_res.scalars().all()
+
+                    reaction_map = {}
+                    for r in all_reactions:
+                        if r.emoji not in reaction_map:
+                            reaction_map[r.emoji] = {
+                                "emoji": r.emoji,
+                                "count": 0,
+                                "users": [],
+                                "user_names": []
+                            }
+                        reaction_map[r.emoji]["count"] += 1
+                        reaction_map[r.emoji]["users"].append(r.user_id)
+                        u_name = r.user.display_name if r.user else "User"
+                        reaction_map[r.emoji]["user_names"].append(u_name)
+
+                    reactions_list = list(reaction_map.values())
+
+                react_payload = {
+                    "type": "message_reaction",
+                    "message_id": msg_id,
+                    "reactions": reactions_list,
+                    "room_id": target_msg.room_id,
+                    "recipient_id": target_msg.recipient_id,
+                    "sender_id": target_msg.sender_id
+                }
+
+                if target_msg.room_id:
+                    await manager.broadcast_to_room(target_msg.room_id, react_payload)
+                elif target_msg.recipient_id:
+                    await manager.send_direct_message(
+                        sender_id=target_msg.sender_id,
+                        recipient_id=target_msg.recipient_id,
+                        message=react_payload
+                    )
 
             elif action == "typing":
                 # Handle typing indicator with privacy separation

@@ -104,10 +104,10 @@ const API = {
     return this.request(`/api/rooms/${roomId}/messages`);
   },
 
-  async sendRoomMessage(roomId, content) {
+  async sendRoomMessage(roomId, content, replyToId = null) {
     return this.request(`/api/rooms/${roomId}/messages`, {
       method: "POST",
-      body: JSON.stringify({ content })
+      body: JSON.stringify({ content, reply_to_id: replyToId })
     });
   },
 
@@ -116,10 +116,18 @@ const API = {
     return this.request(`/api/messages/direct/${otherUserId}`);
   },
 
-  async sendDirectMessage(otherUserId, content) {
+  async sendDirectMessage(otherUserId, content, replyToId = null) {
     return this.request(`/api/messages/direct/${otherUserId}`, {
       method: "POST",
-      body: JSON.stringify({ content })
+      body: JSON.stringify({ content, reply_to_id: replyToId })
+    });
+  },
+
+  // WhatsApp-style Message Reaction Endpoint
+  async toggleReaction(messageId, emoji) {
+    return this.request(`/api/messages/${messageId}/react`, {
+      method: "POST",
+      body: JSON.stringify({ emoji })
     });
   },
 

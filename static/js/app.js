@@ -14,7 +14,9 @@ const App = {
     pendingDeleteRoom: null,
     pendingDeleteMessage: null,
     cmdPaletteItems: [],
-    cmdPaletteActiveIndex: 0
+    cmdPaletteActiveIndex: 0,
+    replyingTo: null,
+    reactionTargetMsgId: null
   },
 
   elements: {},
@@ -68,6 +70,7 @@ const App = {
       headerSectionRooms: document.getElementById("header-section-rooms"),
       headerSectionDms: document.getElementById("header-section-dms"),
       mobileSidebarToggle: document.getElementById("mobile-sidebar-toggle"),
+      mobileBackBtn: document.getElementById("mobile-back-btn"),
       mobileBackdrop: document.getElementById("mobile-backdrop"),
       appSidebar: document.getElementById("app-sidebar"),
 
@@ -89,10 +92,14 @@ const App = {
       typingBar: document.getElementById("typing-bar"),
       typingText: document.getElementById("typing-text"),
 
-      // Input area
+      // Input area & WhatsApp-style Reply preview
       chatForm: document.getElementById("chat-form"),
       chatInput: document.getElementById("chat-input"),
       sendBtn: document.getElementById("send-btn"),
+      replyPreviewBar: document.getElementById("reply-preview-bar"),
+      replyPreviewTitle: document.getElementById("reply-preview-title"),
+      replyPreviewSnippet: document.getElementById("reply-preview-snippet"),
+      cancelReplyBtn: document.getElementById("cancel-reply-btn"),
       emojiToggleBtn: document.getElementById("emoji-toggle-btn"),
       emojiPopover: document.getElementById("emoji-popover"),
       emojiSearchInput: document.getElementById("emoji-search-input"),
@@ -278,14 +285,38 @@ const App = {
       this.toggleEmojiPicker();
     });
 
+    // Mobile Back Button (WhatsApp Phone View)
+    if (this.elements.mobileBackBtn) {
+      this.elements.mobileBackBtn.addEventListener("click", () => this.handleMobileBack());
+    }
+
+    // Cancel WhatsApp Quoted Reply
+    if (this.elements.cancelReplyBtn) {
+      this.elements.cancelReplyBtn.addEventListener("click", () => this.cancelReply());
+    }
+
+    // Global Keydown (Escape to cancel reply or close popovers)
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        if (this.state.replyingTo) {
+          this.cancelReply();
+        }
+        this.closeEmojiPicker();
+        document.querySelectorAll(".whatsapp-msg-toolbar.mobile-active").forEach(t => t.classList.remove("mobile-active"));
+      }
+    });
+
     document.addEventListener("click", (e) => {
-      if (this.elements.emojiPopover && !this.elements.emojiPopover.contains(e.target) && !this.elements.emojiToggleBtn.contains(e.target)) {
+      if (this.elements.emojiPopover && !this.elements.emojiPopover.contains(e.target) && !this.elements.emojiToggleBtn.contains(e.target) && !e.target.closest(".quick-react-more-btn")) {
         this.closeEmojiPicker();
       }
       if (this.elements.cmdPaletteModal && !this.elements.cmdPaletteModal.classList.contains("hidden")) {
         if (!this.elements.cmdPaletteModal.querySelector(".cmd-palette-card").contains(e.target) && e.target !== this.elements.sidebarSearchBox) {
           this.closeCommandPalette();
         }
+      }
+      if (!e.target.closest(".whatsapp-msg-toolbar") && !e.target.closest(".msg-mobile-trigger")) {
+        document.querySelectorAll(".whatsapp-msg-toolbar.mobile-active").forEach(t => t.classList.remove("mobile-active"));
       }
     });
 
@@ -295,6 +326,14 @@ const App = {
         this.closeEmojiPicker();
       });
     }
+
+    // Window resize handler for mobile/desktop layout stability
+    window.addEventListener("resize", () => {
+      if (window.innerWidth > 768 && this.elements.appContainer) {
+        this.elements.appContainer.classList.remove("mobile-view-chat");
+        this.elements.appContainer.classList.remove("mobile-view-list");
+      }
+    });
 
     // Delete group header button (creator only)
     if (this.elements.deleteRoomHeaderBtn) {
@@ -337,6 +376,7 @@ const App = {
     wsClient.on("presence:status", (statusData) => this.handlePresenceStatus(statusData));
     wsClient.on("chat:room_message", (msg) => this.handleIncomingRoomMessage(msg));
     wsClient.on("chat:direct_message", (msg) => this.handleIncomingDirectMessage(msg));
+    wsClient.on("chat:message_reaction", (data) => this.handleMessageReactionEvent(data));
     wsClient.on("chat:message_edited", (msg) => this.handleMessageEdited(msg));
     wsClient.on("chat:message_deleted", (data) => this.handleMessageDeleted(data));
     wsClient.on("chat:typing", (typingData) => this.handleIncomingTyping(typingData));
@@ -666,6 +706,15 @@ const App = {
       await this.loadMessagesHistory();
     }
 
+    // Cancel any active reply
+    this.cancelReply();
+
+    // On mobile phone screens, transition from chat list to active chat view
+    if (this.elements.appContainer) {
+      this.elements.appContainer.classList.add("mobile-view-chat");
+      this.elements.appContainer.classList.remove("mobile-view-list");
+    }
+
     // Auto-close mobile sidebar drawer on selection
     if (this.elements.appSidebar) {
       this.elements.appSidebar.classList.remove("mobile-open");
@@ -792,6 +841,13 @@ const App = {
     });
   },
 
+  escapeHtml(text) {
+    if (!text) return "";
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+  },
+
   createMessageElement(msg) {
     const isMe = msg.sender_id === this.state.currentUser?.id;
     const row = document.createElement("div");
@@ -801,44 +857,122 @@ const App = {
     const timeStr = new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const formattedContent = this.formatMessageText(msg.content);
 
+    // WhatsApp-style quoted reply card inside bubble
+    let quotedReplyHtml = '';
+    if (msg.reply_to) {
+      quotedReplyHtml = `
+        <div class="quoted-reply-card" data-reply-id="${msg.reply_to.id}" title="Click to view quoted message">
+          <div class="quoted-reply-inner">
+            <span class="quoted-reply-author">${this.escapeHtml(msg.reply_to.sender_name || 'User')}</span>
+            <span class="quoted-reply-text">${this.escapeHtml(msg.reply_to.content || '')}</span>
+          </div>
+        </div>
+      `;
+    }
+
+    // WhatsApp-style reaction badges attached to bottom of bubble
+    const myId = this.state.currentUser?.id;
+    let reactionBadgesHtml = '';
+    if (msg.reactions && msg.reactions.length > 0) {
+      const badges = msg.reactions.map(r => {
+        const hasMyReact = r.users && r.users.includes(myId);
+        const titleNames = r.user_names ? r.user_names.join(', ') : `${r.count} reactions`;
+        return `
+          <button type="button" class="reaction-pill ${hasMyReact ? 'active' : ''}" data-emoji="${r.emoji}" title="${this.escapeHtml(titleNames)}">
+            <span class="pill-emoji">${r.emoji}</span>
+            <span class="pill-count">${r.count}</span>
+          </button>
+        `;
+      }).join('');
+      reactionBadgesHtml = `<div class="message-reaction-badges">${badges}</div>`;
+    }
+
+    // Single unified WhatsApp-style floating message toolbar (No overlap!)
+    const toolbarHtml = `
+      <div class="whatsapp-msg-toolbar">
+        <div class="quick-reactions-strip">
+          <button type="button" class="quick-react-btn" data-emoji="👍" title="React 👍">👍</button>
+          <button type="button" class="quick-react-btn" data-emoji="❤️" title="React ❤️">❤️</button>
+          <button type="button" class="quick-react-btn" data-emoji="😂" title="React 😂">😂</button>
+          <button type="button" class="quick-react-btn" data-emoji="😮" title="React 😮">😮</button>
+          <button type="button" class="quick-react-btn" data-emoji="😢" title="React 😢">😢</button>
+          <button type="button" class="quick-react-btn" data-emoji="🙏" title="React 🙏">🙏</button>
+          <button type="button" class="quick-react-more-btn" title="More reactions...">➕</button>
+        </div>
+        <div class="toolbar-divider"></div>
+        <div class="msg-actions-strip">
+          <button type="button" class="msg-tool-btn reply-btn" title="Reply">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>
+          </button>
+          <button type="button" class="msg-tool-btn copy-btn" title="Copy text">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </button>
+          ${isMe ? `
+            <button type="button" class="msg-tool-btn edit-btn" title="Edit message">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
+            </button>
+            <button type="button" class="msg-tool-btn delete-btn" title="Delete message">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
+          ` : ''}
+        </div>
+      </div>
+    `;
+
     row.innerHTML = `
       <div class="message-avatar" style="background-color: ${msg.sender_avatar_color || '#6366f1'}">
         ${msg.sender_display_name ? msg.sender_display_name.charAt(0).toUpperCase() : 'U'}
       </div>
       <div class="message-content-wrap">
-        <div class="message-reactions-bar">
-          <button type="button" class="quick-react-btn" data-emoji="👍" title="React 👍">👍</button>
-          <button type="button" class="quick-react-btn" data-emoji="❤️" title="React ❤️">❤️</button>
-          <button type="button" class="quick-react-btn" data-emoji="😂" title="React 😂">😂</button>
-          <button type="button" class="quick-react-btn" data-emoji="🚀" title="React 🚀">🚀</button>
-          <button type="button" class="quick-react-btn" data-emoji="🔥" title="React 🔥">🔥</button>
-        </div>
         <div class="message-meta">
-          <span class="message-author">${isMe ? 'You' : msg.sender_display_name}</span>
+          <span class="message-author">${isMe ? 'You' : this.escapeHtml(msg.sender_display_name)}</span>
           <span class="message-time">
             ${timeStr}
             ${isMe ? `<span class="read-receipt" title="Delivered & Read">✓✓</span>` : ''}
             ${msg.is_edited ? `<span class="edited-tag">(edited)</span>` : ''}
           </span>
         </div>
-        <div class="message-bubble">
-          <div class="message-text">${formattedContent}</div>
-        </div>
-        <div class="message-actions">
-          <button class="msg-action-btn copy-btn" title="Copy message">📋</button>
-          ${isMe ? `
-            <button class="msg-action-btn edit-btn" title="Edit message">✏️</button>
-            <button class="msg-action-btn delete-btn" title="Delete message">🗑️</button>
-          ` : ''}
+        <div class="message-bubble-container">
+          <div class="message-bubble">
+            ${quotedReplyHtml}
+            <div class="message-text">${formattedContent}</div>
+            ${reactionBadgesHtml}
+          </div>
+          <button type="button" class="msg-mobile-trigger" title="Message actions">⋮</button>
+          ${toolbarHtml}
         </div>
       </div>
     `;
 
-    row.querySelector(".copy-btn").addEventListener("click", () => {
+    // Copy action
+    row.querySelector(".copy-btn")?.addEventListener("click", () => {
       navigator.clipboard.writeText(msg.content);
       this.showToast("Copied to clipboard", "success");
     });
 
+    // Reply action (WhatsApp style)
+    row.querySelector(".reply-btn")?.addEventListener("click", () => {
+      this.startReplyingToMessage(msg);
+    });
+
+    // Quoted reply click -> smoothly navigate to quoted message
+    const quoteEl = row.querySelector(".quoted-reply-card");
+    if (quoteEl) {
+      quoteEl.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const replyId = quoteEl.dataset.replyId;
+        const targetRow = this.elements.messagesContainer.querySelector(`.message-row[data-msg-id="${replyId}"]`);
+        if (targetRow) {
+          targetRow.scrollIntoView({ behavior: "smooth", block: "center" });
+          targetRow.classList.add("message-highlighted");
+          setTimeout(() => targetRow.classList.remove("message-highlighted"), 1800);
+        } else {
+          this.showToast("Quoted message was deleted or earlier in history", "info");
+        }
+      });
+    }
+
+    // Edit and Delete
     if (isMe) {
       const editBtn = row.querySelector(".edit-btn");
       if (editBtn) {
@@ -855,12 +989,39 @@ const App = {
       }
     }
 
+    // Quick emoji reactions (👍 ❤️ 😂 😮 😢 🙏) -> Toggles reaction directly on message
     row.querySelectorAll(".quick-react-btn").forEach(btn => {
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
-        this.sendQuickReaction(btn.dataset.emoji);
+        this.toggleReactionOnMessage(msg.id, btn.dataset.emoji);
       });
     });
+
+    // More reactions button (➕) -> opens full emoji picker for reacting
+    row.querySelector(".quick-react-more-btn")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.openEmojiPickerForReaction(msg.id);
+    });
+
+    // Reaction pills clicked -> toggle reaction
+    row.querySelectorAll(".reaction-pill").forEach(pill => {
+      pill.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.toggleReactionOnMessage(msg.id, pill.dataset.emoji);
+      });
+    });
+
+    // Mobile trigger (⋮) toggle toolbar on phone
+    const mobileTrigger = row.querySelector(".msg-mobile-trigger");
+    if (mobileTrigger) {
+      mobileTrigger.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const toolbar = row.querySelector(".whatsapp-msg-toolbar");
+        const wasOpen = toolbar.classList.contains("mobile-active");
+        document.querySelectorAll(".whatsapp-msg-toolbar.mobile-active").forEach(t => t.classList.remove("mobile-active"));
+        if (!wasOpen) toolbar.classList.add("mobile-active");
+      });
+    }
 
     return row;
   },
@@ -900,6 +1061,9 @@ const App = {
       return;
     }
 
+    const replyToId = this.state.replyingTo?.id || null;
+    this.cancelReply();
+
     // Reset textarea immediately
     this.elements.chatInput.value = "";
     this.elements.chatInput.style.height = "auto";
@@ -909,16 +1073,16 @@ const App = {
 
     try {
       if (active.type === "room") {
-        const sentViaWs = wsClient.sendRoomMessage(active.id, content);
+        const sentViaWs = wsClient.sendRoomMessage(active.id, content, replyToId);
         if (!sentViaWs) {
           // Fallback to REST API if WS not ready
-          await API.sendRoomMessage(active.id, content);
+          await API.sendRoomMessage(active.id, content, replyToId);
         }
       } else {
-        const sentViaWs = wsClient.sendDirectMessage(active.id, content);
+        const sentViaWs = wsClient.sendDirectMessage(active.id, content, replyToId);
         if (!sentViaWs) {
           // Fallback to REST API
-          await API.sendDirectMessage(active.id, content);
+          await API.sendDirectMessage(active.id, content, replyToId);
         }
       }
     } catch (err) {
@@ -1113,6 +1277,7 @@ const App = {
     const bubble = row.querySelector(".message-bubble");
     if (!bubble || bubble.querySelector(".message-edit-wrap")) return;
 
+    row.classList.add("is-editing");
     const originalContent = msg.content;
     const oldHtml = bubble.innerHTML;
 
@@ -1134,6 +1299,7 @@ const App = {
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
 
     const cancelEdit = () => {
+      row.classList.remove("is-editing");
       bubble.innerHTML = oldHtml;
     };
 
@@ -1166,6 +1332,7 @@ const App = {
 
   async saveEditedMessage(msgId, newContent, row, fallbackHtml) {
     try {
+      if (row) row.classList.remove("is-editing");
       const bubble = row?.querySelector(".message-bubble");
       if (bubble) {
         bubble.innerHTML = `<div class="message-text">${this.formatMessageText(newContent)}</div>`;
@@ -1176,6 +1343,7 @@ const App = {
       this.showToast("Message edited successfully", "success");
     } catch (err) {
       if (row && fallbackHtml) {
+        row.classList.add("is-editing");
         const bubble = row.querySelector(".message-bubble");
         if (bubble) bubble.innerHTML = fallbackHtml;
       }
@@ -1926,6 +2094,7 @@ const App = {
   },
 
   closeEmojiPicker() {
+    this.state.reactionTargetMsgId = null;
     if (this.elements.emojiPopover) {
       this.elements.emojiPopover.classList.add("hidden");
     }
@@ -1999,6 +2168,14 @@ const App = {
   },
 
   insertEmoji(char) {
+    if (this.state.reactionTargetMsgId) {
+      // User picked an emoji from picker to react to a message!
+      const targetId = this.state.reactionTargetMsgId;
+      this.closeEmojiPicker();
+      this.toggleReactionOnMessage(targetId, char);
+      return;
+    }
+
     const input = this.elements.chatInput;
     const start = input.selectionStart || input.value.length;
     const end = input.selectionEnd || input.value.length;
@@ -2063,19 +2240,122 @@ const App = {
   },
 
   async sendQuickReaction(emoji) {
-    const active = this.state.activeChat;
-    if (!active) return;
+    // If called generally, toggle reaction on the latest message instead of sending new text
+    const msgs = this.state.messages;
+    if (msgs && msgs.length > 0) {
+      const lastMsg = msgs[msgs.length - 1];
+      this.toggleReactionOnMessage(lastMsg.id, emoji);
+    }
+  },
 
+  async toggleReactionOnMessage(msgId, emoji) {
+    if (!msgId || !emoji) return;
     try {
-      if (active.type === "room") {
-        const sentViaWs = wsClient.sendRoomMessage(active.id, emoji);
-        if (!sentViaWs) await API.sendRoomMessage(active.id, emoji);
-      } else {
-        const sentViaWs = wsClient.sendDirectMessage(active.id, emoji);
-        if (!sentViaWs) await API.sendDirectMessage(active.id, emoji);
+      const sentViaWs = wsClient.sendToggleReaction(msgId, emoji);
+      if (!sentViaWs) {
+        const res = await API.toggleReaction(msgId, emoji);
+        if (res && res.reactions) {
+          this.handleMessageReactionEvent({ message_id: msgId, reactions: res.reactions });
+        }
       }
     } catch (err) {
       this.showToast("Failed to react: " + err.message, "error");
+    }
+  },
+
+  handleMessageReactionEvent(data) {
+    const { message_id, reactions } = data;
+    const msg = this.state.messages.find(m => m.id === message_id);
+    if (msg) {
+      msg.reactions = reactions;
+    }
+
+    const row = this.elements.messagesContainer?.querySelector(`.message-row[data-msg-id="${message_id}"]`);
+    if (!row) return;
+
+    const bubble = row.querySelector(".message-bubble");
+    if (!bubble) return;
+
+    let badgesContainer = bubble.querySelector(".message-reaction-badges");
+    const myId = this.state.currentUser?.id;
+
+    if (!reactions || reactions.length === 0) {
+      if (badgesContainer) badgesContainer.remove();
+      return;
+    }
+
+    const badgesHtml = reactions.map(r => {
+      const hasMyReact = r.users && r.users.includes(myId);
+      const titleNames = r.user_names ? r.user_names.join(', ') : `${r.count} reactions`;
+      return `
+        <button type="button" class="reaction-pill ${hasMyReact ? 'active' : ''}" data-emoji="${r.emoji}" title="${this.escapeHtml(titleNames)}">
+          <span class="pill-emoji">${r.emoji}</span>
+          <span class="pill-count">${r.count}</span>
+        </button>
+      `;
+    }).join('');
+
+    if (!badgesContainer) {
+      badgesContainer = document.createElement("div");
+      badgesContainer.className = "message-reaction-badges";
+      bubble.appendChild(badgesContainer);
+    }
+    badgesContainer.innerHTML = badgesHtml;
+
+    // Rebind pill clicks
+    badgesContainer.querySelectorAll(".reaction-pill").forEach(pill => {
+      pill.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.toggleReactionOnMessage(message_id, pill.dataset.emoji);
+      });
+    });
+  },
+
+  startReplyingToMessage(msg) {
+    const isMe = msg.sender_id === this.state.currentUser?.id;
+    const authorName = isMe ? "You" : (msg.sender_display_name || "User");
+    this.state.replyingTo = {
+      id: msg.id,
+      senderName: authorName,
+      content: msg.content
+    };
+
+    if (this.elements.replyPreviewBar) {
+      this.elements.replyPreviewTitle.textContent = `Replying to ${authorName}`;
+      this.elements.replyPreviewSnippet.textContent = msg.content;
+      this.elements.replyPreviewBar.classList.remove("hidden");
+    }
+
+    if (this.elements.chatInput) {
+      this.elements.chatInput.focus();
+    }
+  },
+
+  cancelReply() {
+    this.state.replyingTo = null;
+    if (this.elements.replyPreviewBar) {
+      this.elements.replyPreviewBar.classList.add("hidden");
+    }
+  },
+
+  handleMobileBack() {
+    if (this.elements.appContainer) {
+      this.elements.appContainer.classList.remove("mobile-view-chat");
+      this.elements.appContainer.classList.add("mobile-view-list");
+    }
+    if (this.elements.detailsPanel) {
+      this.elements.detailsPanel.classList.add("collapsed");
+    }
+    this.cancelReply();
+  },
+
+  openEmojiPickerForReaction(msgId) {
+    this.state.reactionTargetMsgId = msgId;
+    if (this.elements.emojiPopover) {
+      this.elements.emojiPopover.classList.remove("hidden");
+      if (this.elements.emojiSearchInput) {
+        this.elements.emojiSearchInput.focus();
+      }
     }
   },
 

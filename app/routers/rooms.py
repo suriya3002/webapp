@@ -80,9 +80,14 @@ async def get_room_messages(
     if not room:
         raise HTTPException(status_code=404, detail="Room not found")
 
+    from app.models import MessageReaction
     result = await db.execute(
         select(Message)
-        .options(selectinload(Message.sender))
+        .options(
+            selectinload(Message.sender),
+            selectinload(Message.reply_to).selectinload(Message.sender),
+            selectinload(Message.reactions).selectinload(MessageReaction.user)
+        )
         .where(Message.room_id == room_id)
         .order_by(Message.created_at.asc())
         .limit(limit)
@@ -97,6 +102,7 @@ async def post_room_message(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
+    from app.models import MessageReaction
     room_res = await db.execute(select(Room).where(Room.id == room_id))
     room = room_res.scalar_one_or_none()
     if not room:
@@ -105,15 +111,22 @@ async def post_room_message(
     new_msg = Message(
         sender_id=current_user.id,
         room_id=room_id,
-        content=msg_in.content.strip()
+        content=msg_in.content.strip(),
+        reply_to_id=msg_in.reply_to_id
     )
     db.add(new_msg)
     await db.commit()
     await db.refresh(new_msg)
 
-    # Re-fetch with sender relationship
+    # Re-fetch with sender, reply_to, and reactions relationships
     res = await db.execute(
-        select(Message).options(selectinload(Message.sender)).where(Message.id == new_msg.id)
+        select(Message)
+        .options(
+            selectinload(Message.sender),
+            selectinload(Message.reply_to).selectinload(Message.sender),
+            selectinload(Message.reactions).selectinload(MessageReaction.user)
+        )
+        .where(Message.id == new_msg.id)
     )
     full_msg = res.scalar_one()
     msg_dict = full_msg.to_dict()

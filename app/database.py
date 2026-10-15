@@ -52,6 +52,10 @@ async def init_db():
                 await conn.exec_driver_sql("ALTER TABLE messages ADD COLUMN updated_at DATETIME NULL")
             except Exception:
                 pass
+            try:
+                await conn.exec_driver_sql("ALTER TABLE messages ADD COLUMN reply_to_id INTEGER NULL")
+            except Exception:
+                pass
             logger.info("Database tables initialized successfully.")
     except Exception as e:
         logger.warning(f"Failed to connect using configured DATABASE_URL ({db_url}): {e}")

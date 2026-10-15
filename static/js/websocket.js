@@ -96,19 +96,29 @@ class ChatWebSocketClient {
     return false;
   }
 
-  sendRoomMessage(roomId, content) {
+  sendRoomMessage(roomId, content, replyToId = null) {
     return this.send({
       action: "send_room_message",
       room_id: roomId,
-      content: content
+      content: content,
+      reply_to_id: replyToId
     });
   }
 
-  sendDirectMessage(recipientId, content) {
+  sendDirectMessage(recipientId, content, replyToId = null) {
     return this.send({
       action: "send_direct_message",
       recipient_id: recipientId,
-      content: content
+      content: content,
+      reply_to_id: replyToId
+    });
+  }
+
+  sendToggleReaction(messageId, emoji) {
+    return this.send({
+      action: "react_message",
+      message_id: messageId,
+      emoji: emoji
     });
   }
 
@@ -150,6 +160,9 @@ class ChatWebSocketClient {
         break;
       case "direct_message":
         this.emit("chat:direct_message", data.message);
+        break;
+      case "message_reaction":
+        this.emit("chat:message_reaction", data);
         break;
       case "message_edited":
         this.emit("chat:message_edited", data.message);

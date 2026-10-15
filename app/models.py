@@ -91,10 +91,14 @@ class Message(Base):
     is_read = Column(Boolean, default=False)
     is_edited = Column(Boolean, default=False)
 
+    reply_to_id = Column(Integer, ForeignKey("messages.id", ondelete="SET NULL"), nullable=True)
+
     # Relationships
     sender = relationship("User", foreign_keys=[sender_id], back_populates="sent_messages")
     recipient = relationship("User", foreign_keys=[recipient_id], back_populates="received_messages")
     room = relationship("Room", back_populates="messages")
+    reply_to = relationship("Message", remote_side=[id], foreign_keys=[reply_to_id], lazy="selectin")
+    reactions = relationship("MessageReaction", back_populates="message", cascade="all, delete-orphan", lazy="selectin")
 
     __table_args__ = (
         Index("ix_messages_dm", "sender_id", "recipient_id"),
@@ -102,6 +106,41 @@ class Message(Base):
     )
 
     def to_dict(self):
+        from sqlalchemy import inspect
+        insp = inspect(self)
+
+        # Format reactions grouped by emoji
+        reaction_map = {}
+        if "reactions" in insp.dict and self.reactions:
+            for r in self.reactions:
+                if r.emoji not in reaction_map:
+                    reaction_map[r.emoji] = {
+                        "emoji": r.emoji,
+                        "count": 0,
+                        "users": [],
+                        "user_names": []
+                    }
+                reaction_map[r.emoji]["count"] += 1
+                reaction_map[r.emoji]["users"].append(r.user_id)
+                r_insp = inspect(r)
+                user_name = "User"
+                if "user" in r_insp.dict and r.user:
+                    user_name = r.user.display_name
+                reaction_map[r.emoji]["user_names"].append(user_name)
+
+        reply_info = None
+        if "reply_to" in insp.dict and self.reply_to:
+            sender_name = "User"
+            rt_insp = inspect(self.reply_to)
+            if "sender" in rt_insp.dict and self.reply_to.sender:
+                sender_name = self.reply_to.sender.display_name
+            reply_info = {
+                "id": self.reply_to.id,
+                "sender_id": self.reply_to.sender_id,
+                "sender_name": sender_name,
+                "content": self.reply_to.content[:140] if self.reply_to.content else ""
+            }
+
         return {
             "id": self.id,
             "sender_id": self.sender_id,
@@ -114,5 +153,23 @@ class Message(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "is_read": self.is_read,
-            "is_edited": bool(self.is_edited)
+            "is_edited": bool(self.is_edited),
+            "reply_to_id": self.reply_to_id,
+            "reply_to": reply_info,
+            "reactions": list(reaction_map.values())
         }
+
+
+class MessageReaction(Base):
+    __tablename__ = "message_reactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    message_id = Column(Integer, ForeignKey("messages.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    emoji = Column(String(32), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    message = relationship("Message", back_populates="reactions")
+    user = relationship("User", lazy="selectin")
+
+

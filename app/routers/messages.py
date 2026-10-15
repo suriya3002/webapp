@@ -6,8 +6,8 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.models import Message, User
-from app.schemas import MessageResponse, MessageCreate, MessageUpdate
 from app.auth import get_current_user
+from app.schemas import MessageResponse, MessageCreate, MessageUpdate, ReactionToggleRequest
 from app.connection_manager import manager
 from datetime import datetime, timezone
 
@@ -30,10 +30,15 @@ async def get_direct_messages(
     if other_user_id == current_user.id:
         raise HTTPException(status_code=400, detail="Cannot start a private conversation with yourself")
 
+    from app.models import MessageReaction
     # Fetch messages where (sender == me and recipient == other) OR (sender == other and recipient == me)
     result = await db.execute(
         select(Message)
-        .options(selectinload(Message.sender))
+        .options(
+            selectinload(Message.sender),
+            selectinload(Message.reply_to).selectinload(Message.sender),
+            selectinload(Message.reactions).selectinload(MessageReaction.user)
+        )
         .where(
             Message.room_id.is_(None),
             or_(
@@ -64,6 +69,7 @@ async def post_direct_message(
     db: AsyncSession = Depends(get_db)
 ):
     """Send a private direct message to another user."""
+    from app.models import MessageReaction
     other_res = await db.execute(select(User).where(User.id == other_user_id))
     other_user = other_res.scalar_one_or_none()
     if not other_user:
@@ -76,15 +82,22 @@ async def post_direct_message(
         sender_id=current_user.id,
         recipient_id=other_user_id,
         room_id=None,
-        content=msg_in.content.strip()
+        content=msg_in.content.strip(),
+        reply_to_id=msg_in.reply_to_id
     )
     db.add(new_msg)
     await db.commit()
     await db.refresh(new_msg)
 
-    # Re-fetch with sender relationship
+    # Re-fetch with relationships
     res = await db.execute(
-        select(Message).options(selectinload(Message.sender)).where(Message.id == new_msg.id)
+        select(Message)
+        .options(
+            selectinload(Message.sender),
+            selectinload(Message.reply_to).selectinload(Message.sender),
+            selectinload(Message.reactions).selectinload(MessageReaction.user)
+        )
+        .where(Message.id == new_msg.id)
     )
     full_msg = res.scalar_one()
     msg_dict = full_msg.to_dict()
@@ -100,6 +113,96 @@ async def post_direct_message(
     )
 
     return MessageResponse(**msg_dict)
+
+
+@router.post("/{message_id}/react")
+async def toggle_message_reaction(
+    message_id: int,
+    react_in: ReactionToggleRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Toggle a WhatsApp-style emoji reaction on a message (add if not present, remove if present)."""
+    from app.models import MessageReaction
+
+    msg_res = await db.execute(
+        select(Message).options(selectinload(Message.sender)).where(Message.id == message_id)
+    )
+    message = msg_res.scalar_one_or_none()
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    emoji = react_in.emoji.strip()
+    if not emoji:
+        raise HTTPException(status_code=400, detail="Emoji cannot be empty")
+
+    # Check if user already reacted with this emoji
+    existing_res = await db.execute(
+        select(MessageReaction).where(
+            MessageReaction.message_id == message_id,
+            MessageReaction.user_id == current_user.id,
+            MessageReaction.emoji == emoji
+        )
+    )
+    existing = existing_res.scalar_one_or_none()
+
+    if existing:
+        await db.delete(existing)
+        action_type = "removed"
+    else:
+        new_react = MessageReaction(
+            message_id=message_id,
+            user_id=current_user.id,
+            emoji=emoji
+        )
+        db.add(new_react)
+        action_type = "added"
+
+    await db.commit()
+
+    # Fetch fresh reactions directly for this message
+    react_res = await db.execute(
+        select(MessageReaction)
+        .options(selectinload(MessageReaction.user))
+        .where(MessageReaction.message_id == message_id)
+    )
+    all_reactions = react_res.scalars().all()
+
+    reaction_map = {}
+    for r in all_reactions:
+        if r.emoji not in reaction_map:
+            reaction_map[r.emoji] = {
+                "emoji": r.emoji,
+                "count": 0,
+                "users": [],
+                "user_names": []
+            }
+        reaction_map[r.emoji]["count"] += 1
+        reaction_map[r.emoji]["users"].append(r.user_id)
+        user_name = r.user.display_name if r.user else "User"
+        reaction_map[r.emoji]["user_names"].append(user_name)
+
+    reactions_list = list(reaction_map.values())
+
+    event_payload = {
+        "type": "message_reaction",
+        "message_id": message_id,
+        "reactions": reactions_list,
+        "room_id": message.room_id,
+        "recipient_id": message.recipient_id,
+        "sender_id": message.sender_id
+    }
+
+    if message.room_id:
+        await manager.broadcast_to_room(message.room_id, event_payload)
+    elif message.recipient_id:
+        await manager.send_direct_message(
+            sender_id=message.sender_id,
+            recipient_id=message.recipient_id,
+            message=event_payload
+        )
+
+    return {"status": "ok", "action": action_type, "reactions": reactions_list}
  
 @router.put("/{message_id}", response_model=MessageResponse)
 async def edit_message(
